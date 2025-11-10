@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import json
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -37,11 +38,16 @@ def parse_caen_log(filepath):
 class PlotlyLiveViewer(QWidget):
     def __init__(self, df, file_path):
         super().__init__()
-        self.setWindowTitle("CAEN Log Viewer v12e")
+        self.setWindowTitle("CAEN Log Viewer v14")
         self.setMinimumSize(1200, 800)
         self.df = df
         self.loaded_path = file_path
         self.loaded_filename = os.path.basename(file_path)
+        self.viewer = None
+        self.viewer_ready = False
+        self.trace_map = {}
+        self.current_selection = ([], [])
+        self.pending_new_data = []
 
         layout = QVBoxLayout()
         controls = QHBoxLayout()
@@ -140,7 +146,7 @@ class PlotlyLiveViewer(QWidget):
             if new_data:
                 new_df = pd.DataFrame(new_data)
                 self.df = pd.concat([self.df, new_df], ignore_index=True)
-                self.generate_plots()
+                self.extend_plot(new_df)
         except Exception as e:
             print(f">> Live update error: {e}")
 
@@ -149,6 +155,9 @@ class PlotlyLiveViewer(QWidget):
             widget = self.plot_layout.itemAt(i).widget()
             if widget:
                 widget.setParent(None)
+        if self.viewer:
+            self.viewer.deleteLater()
+            self.viewer = None
 
         selected_ch = [int(item.text()) for item in self.chan_select.selectedItems()]
         selected_par = [item.text() for item in self.par_select.selectedItems()]
@@ -167,6 +176,7 @@ class PlotlyLiveViewer(QWidget):
 
         colors = px.colors.qualitative.Set1
         ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
+        trace_map = {}
 
         for i, par in enumerate(selected_par, start=1):
             df_par = df_filtered[df_filtered["par"] == par]
@@ -186,6 +196,7 @@ class PlotlyLiveViewer(QWidget):
                     ),
                     row=i, col=1
                 )
+                trace_map[(par, ch)] = len(fig.data) - 1
                 fig.add_annotation(
                     text=f"● ch {ch}",
                     xref="paper", yref="paper",
@@ -206,10 +217,28 @@ class PlotlyLiveViewer(QWidget):
         )
 
         viewer = QWebEngineView()
-        html_content = fig.to_html(full_html=True, include_plotlyjs="cdn")
+        html_content = fig.to_html(
+            full_html=True,
+            include_plotlyjs="cdn",
+            div_id="plotly-live-view"
+        )
+        js_mapping = json.dumps({f"{par}|{ch}": idx for (par, ch), idx in trace_map.items()})
+        html_content += f"""
+<script>
+window.plotlyLiveViewId = "plotly-live-view";
+window.traceNameToIndex = {js_mapping};
+</script>
+"""
+        self.viewer_ready = False
+        self.pending_new_data.clear()
         viewer.setHtml(html_content)
         viewer.setMinimumHeight(400)
+        viewer.loadFinished.connect(self.on_viewer_load_finished)
         self.plot_layout.addWidget(viewer)
+
+        self.viewer = viewer
+        self.trace_map = trace_map
+        self.current_selection = (selected_ch, selected_par)
 
     def export_canvas_pdf(self):
         file_path, _ = QFileDialog.getSaveFileName(
@@ -223,6 +252,61 @@ class PlotlyLiveViewer(QWidget):
         webview = self.plot_layout.itemAt(self.plot_layout.count() - 1).widget()
         if hasattr(webview, 'page'):
             webview.page().printToPdf(file_path)
+
+    def on_viewer_load_finished(self, ok):
+        self.viewer_ready = ok
+        if ok and self.pending_new_data:
+            combined = pd.concat(self.pending_new_data, ignore_index=True)
+            self.pending_new_data.clear()
+            self._extend_plot_with_df(combined)
+
+    def extend_plot(self, new_df):
+        if new_df.empty:
+            return
+        if not self.viewer or not self.trace_map:
+            return
+        if not self.viewer_ready:
+            self.pending_new_data.append(new_df)
+            return
+        self._extend_plot_with_df(new_df)
+
+    def _extend_plot_with_df(self, new_df):
+        selected_ch, selected_par = self.current_selection
+        if not selected_ch or not selected_par:
+            return
+
+        df_filtered = new_df[
+            new_df["ch"].isin(selected_ch) &
+            new_df["par"].isin(selected_par)
+        ]
+        if df_filtered.empty:
+            return
+
+        df_filtered = df_filtered.sort_values("timestamp")
+        for (par, ch), group in df_filtered.groupby(["par", "ch"]):
+            trace_idx = self.trace_map.get((par, ch))
+            if trace_idx is None:
+                continue
+            timestamps = group["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S.%f").tolist()
+            values = group["val"].tolist()
+            payload = json.dumps({
+                "trace_index": trace_idx,
+                "x": timestamps,
+                "y": values
+            })
+            js_code = f"""
+            (function() {{
+                if (!window.Plotly || !window.plotlyLiveViewId) return;
+                const data = {payload};
+                const el = document.getElementById(window.plotlyLiveViewId);
+                if (!el) return;
+                Plotly.extendTraces(el, {{
+                    x: [data.x],
+                    y: [data.y]
+                }}, [data.trace_index]);
+            }})();
+            """
+            self.viewer.page().runJavaScript(js_code)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
