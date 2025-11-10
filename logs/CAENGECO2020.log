@@ -1,0 +1,12 @@
+[2021-10-07T08:57:29]: [N1471H_proto7] bd [0] ch [0] par [ChStatus] val [3]; 
+[2021-10-07T08:57:29]: [N1471H_proto7] bd [0] ch [3] par [ChStatus] val [3]; 
+[2021-10-07T08:57:31]: [N1471H_proto7] bd [0] ch [0] par [VMon] val [1.9]; 
+[2021-10-07T08:57:31]: [N1471H_proto7] bd [0] ch [3] par [VMon] val [3.8]; 
+[2021-10-07T08:57:31]: [N1471H_proto7] bd [0] ch [3] par [IMonL] val [0.01285]; 
+[2021-10-07T08:57:33]: [N1471H_proto7] bd [0] ch [0] par [VMon] val [27.3]; 
+[2021-10-07T08:57:33]: [N1471H_proto7] bd [0] ch [3] par [VMon] val [27.8]; 
+[2021-10-07T08:57:33]: [N1471H_proto7] bd [0] ch [0] par [IMonL] val [0.11925]; 
+[2021-10-07T08:57:33]: [N1471H_proto7] bd [0] ch [3] par [IMonL] val [0.1159]; 
+[2021-10-07T08:57:35]: [N1471H_proto7] bd [0] ch [0] par [VMon] val [42.7]; 
+[2021-10-07T08:57:35]: [N1471H_proto7] bd [0] ch [3] par [VMon] val [43.2]; 
+
