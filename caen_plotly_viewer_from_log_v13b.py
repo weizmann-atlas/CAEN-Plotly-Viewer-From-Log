@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import json
+from datetime import datetime
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -9,7 +10,7 @@ from plotly.subplots import make_subplots
 from PyQt5.QtWidgets import (
     QApplication, QVBoxLayout, QWidget, QFileDialog,
     QListWidget, QLabel, QHBoxLayout, QPushButton, QScrollArea,
-    QAbstractItemView, QListWidgetItem, QSpinBox
+    QAbstractItemView, QListWidgetItem, QSpinBox, QMessageBox
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer
@@ -48,6 +49,7 @@ class PlotlyLiveViewer(QWidget):
         self.trace_map = {}
         self.current_selection = ([], [])
         self.pending_new_data = []
+        self.current_fig = None
 
         layout = QVBoxLayout()
         controls = QHBoxLayout()
@@ -158,6 +160,7 @@ class PlotlyLiveViewer(QWidget):
         if self.viewer:
             self.viewer.deleteLater()
             self.viewer = None
+        self.current_fig = None
 
         selected_ch = [int(item.text()) for item in self.chan_select.selectedItems()]
         selected_par = [item.text() for item in self.par_select.selectedItems()]
@@ -177,55 +180,78 @@ class PlotlyLiveViewer(QWidget):
         colors = px.colors.qualitative.Set1
         ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
         trace_map = {}
+        legend_channels_seen = set()
 
         for i, par in enumerate(selected_par, start=1):
             df_par = df_filtered[df_filtered["par"] == par]
 
-            for j, ch in enumerate(selected_ch):
+            for ch in selected_ch:
                 df_ch = df_par[df_par["ch"] == ch]
                 if df_ch.empty:
                     continue
+                show_channel_legend = ch not in legend_channels_seen
                 fig.add_trace(
                     go.Scatter(
                         x=df_ch["timestamp"],
                         y=df_ch["val"],
                         mode="lines+markers",
                         name=f"ch {ch}",
+                        legendgroup=f"ch {ch}",
                         marker=dict(color=ch_to_color.get(ch)),
-                        showlegend=False
+                        showlegend=show_channel_legend
                     ),
                     row=i, col=1
                 )
+                legend_channels_seen.add(ch)
                 trace_map[(par, ch)] = len(fig.data) - 1
-                fig.add_annotation(
-                    text=f"● ch {ch}",
-                    xref="paper", yref="paper",
-                    x=0.01 + j * 0.1, y=1 - (i - 1 + 0.1) / rows,
-                    showarrow=False,
-                    font=dict(size=11, color=ch_to_color[ch]),
-                    bgcolor="rgba(255,255,255,0.5)",
-                    bordercolor="lightgray",
-                    borderwidth=1
-                )
 
             fig.update_yaxes(title_text=par, row=i, col=1)
 
         fig.update_layout(
             height=300 * rows,
             hovermode="x unified",
-            title_text=self.loaded_filename
+            title_text=self.loaded_filename,
+            margin=dict(r=220),
+            legend=dict(
+                x=1.02,
+                y=1,
+                xanchor="left",
+                yanchor="top"
+            )
         )
 
         viewer = QWebEngineView()
+        plot_ready_script = """
+window.plotlyLiveViewId = "{plot_id}";
+window.plotlyPendingUpdates = 0;
+window.plotlyRenderReady = false;
+(function() {
+    const el = document.getElementById("{plot_id}");
+    if (!el) return;
+    const markReady = function() {
+        window.requestAnimationFrame(function() {
+            window.requestAnimationFrame(function() {
+                window.plotlyRenderReady = true;
+            });
+        });
+    };
+    if (el.on) {
+        el.on("plotly_afterplot", function() {
+            markReady();
+        });
+    }
+    markReady();
+})();
+"""
         html_content = fig.to_html(
             full_html=True,
             include_plotlyjs="cdn",
-            div_id="plotly-live-view"
+            div_id="plotly-live-view",
+            post_script=plot_ready_script
         )
         js_mapping = json.dumps({f"{par}|{ch}": idx for (par, ch), idx in trace_map.items()})
         html_content += f"""
 <script>
-window.plotlyLiveViewId = "plotly-live-view";
 window.traceNameToIndex = {js_mapping};
 </script>
 """
@@ -237,28 +263,107 @@ window.traceNameToIndex = {js_mapping};
         self.plot_layout.addWidget(viewer)
 
         self.viewer = viewer
+        self.current_fig = fig
         self.trace_map = trace_map
         self.current_selection = (selected_ch, selected_par)
 
     def export_canvas_pdf(self):
+        if self.current_fig is None:
+            QMessageBox.information(
+                self,
+                "No Plot Available",
+                "Generate a plot before exporting the canvas."
+            )
+            return
+
+        timestamp_suffix = datetime.now().strftime("_%Y_%m_%d_%H_%M")
+        default_export_name = os.path.join(
+            os.path.dirname(self.loaded_path),
+            os.path.splitext(self.loaded_filename)[0] + timestamp_suffix + ".pdf"
+        )
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export current canvas as PDF",
-            os.path.splitext(self.loaded_filename)[0] + "_canvas.pdf",
+            default_export_name,
             "PDF Files (*.pdf)"
         )
         if not file_path:
             return
-        webview = self.plot_layout.itemAt(self.plot_layout.count() - 1).widget()
-        if hasattr(webview, 'page'):
-            webview.page().printToPdf(file_path)
+        if not file_path.lower().endswith(".pdf"):
+            file_path += ".pdf"
+
+        self.export_canvas_button.setEnabled(False)
+        self.export_canvas_button.setText("Exporting...")
+
+        try:
+            self.current_fig.write_image(file_path, format="pdf")
+        except Exception as exc:
+            self._reset_export_button()
+            QMessageBox.warning(
+                self,
+                "Export Failed",
+                f"Plotly could not export the current figure to PDF:\n{exc}"
+            )
+            return
+
+        self._reset_export_button()
+        QMessageBox.information(
+            self,
+            "Export Complete",
+            f"Saved PDF to:\n{file_path}"
+        )
+
+    def _plot_ready_js(self):
+        return """
+        (function() {
+            const el = window.plotlyLiveViewId
+                ? document.getElementById(window.plotlyLiveViewId)
+                : null;
+            return Boolean(
+                window.Plotly &&
+                el &&
+                window.plotlyRenderReady &&
+                (window.plotlyPendingUpdates || 0) === 0
+            );
+        })();
+        """
+
+    def _reset_export_button(self):
+        self.export_canvas_button.setEnabled(True)
+        self.export_canvas_button.setText("Export Canvas PDF")
 
     def on_viewer_load_finished(self, ok):
-        self.viewer_ready = ok
-        if ok and self.pending_new_data:
-            combined = pd.concat(self.pending_new_data, ignore_index=True)
-            self.pending_new_data.clear()
-            self._extend_plot_with_df(combined)
+        self.viewer_ready = False
+        if ok and self.viewer:
+            self._poll_viewer_ready(self.viewer, 0)
+
+    def _poll_viewer_ready(self, viewer, attempt):
+        if not viewer or viewer is not self.viewer:
+            return
+        viewer.page().runJavaScript(
+            self._plot_ready_js(),
+            lambda ready, current_viewer=viewer, current_attempt=attempt:
+                self._handle_ready_check(current_viewer, current_attempt, bool(ready))
+        )
+
+    def _handle_ready_check(self, viewer, attempt, ready):
+        if viewer is not self.viewer:
+            return
+        if ready:
+            self.viewer_ready = True
+            if self.pending_new_data:
+                combined = pd.concat(self.pending_new_data, ignore_index=True)
+                self.pending_new_data.clear()
+                self._extend_plot_with_df(combined)
+            return
+        if attempt >= 100:
+            print(">> Plot render readiness timeout.")
+            return
+        QTimer.singleShot(
+            100,
+            lambda current_viewer=viewer, next_attempt=attempt + 1:
+                self._poll_viewer_ready(current_viewer, next_attempt)
+        )
 
     def extend_plot(self, new_df):
         if new_df.empty:
@@ -287,8 +392,13 @@ window.traceNameToIndex = {js_mapping};
             trace_idx = self.trace_map.get((par, ch))
             if trace_idx is None:
                 continue
+            figure_timestamps = group["timestamp"].tolist()
             timestamps = group["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S.%f").tolist()
             values = group["val"].tolist()
+            if self.current_fig is not None and trace_idx < len(self.current_fig.data):
+                current_trace = self.current_fig.data[trace_idx]
+                current_trace.x = list(current_trace.x) + figure_timestamps
+                current_trace.y = list(current_trace.y) + values
             payload = json.dumps({
                 "trace_index": trace_idx,
                 "x": timestamps,
@@ -300,10 +410,21 @@ window.traceNameToIndex = {js_mapping};
                 const data = {payload};
                 const el = document.getElementById(window.plotlyLiveViewId);
                 if (!el) return;
+                window.plotlyPendingUpdates = (window.plotlyPendingUpdates || 0) + 1;
+                window.plotlyRenderReady = false;
                 Plotly.extendTraces(el, {{
                     x: [data.x],
                     y: [data.y]
                 }}, [data.trace_index]);
+                window.requestAnimationFrame(function() {{
+                    window.requestAnimationFrame(function() {{
+                        window.plotlyPendingUpdates = Math.max(
+                            0,
+                            (window.plotlyPendingUpdates || 1) - 1
+                        );
+                        window.plotlyRenderReady = window.plotlyPendingUpdates === 0;
+                    }});
+                }});
             }})();
             """
             self.viewer.page().runJavaScript(js_code)
