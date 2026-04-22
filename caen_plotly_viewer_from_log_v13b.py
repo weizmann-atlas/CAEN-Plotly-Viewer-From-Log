@@ -3,73 +3,116 @@ import os
 import re
 import json
 from datetime import datetime
+
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from PyQt5.QtWidgets import (
-    QApplication, QVBoxLayout, QWidget, QFileDialog,
-    QListWidget, QLabel, QHBoxLayout, QPushButton, QScrollArea,
-    QAbstractItemView, QListWidgetItem, QSpinBox, QMessageBox
+    QApplication,
+    QVBoxLayout,
+    QWidget,
+    QFileDialog,
+    QListWidget,
+    QLabel,
+    QHBoxLayout,
+    QPushButton,
+    QScrollArea,
+    QAbstractItemView,
+    QListWidgetItem,
+    QSpinBox,
+    QMessageBox,
+    QLineEdit,
+    QCheckBox,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt, QSize
 
-def parse_caen_log(filepath):
-    pattern = re.compile(
-        r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
-        r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
-    )
+APP_TITLE = "CAEN Log Viewer v15"
+LOG_PATTERN = re.compile(
+    r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
+    r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
+)
+
+
+def parse_caen_lines(lines):
     data = []
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            match = pattern.match(line.strip())
-            if match:
-                entry = match.groupdict()
-                try:
-                    entry["timestamp"] = pd.to_datetime(entry["timestamp"])
-                    entry["bd"] = int(entry["bd"])
-                    entry["ch"] = int(entry["ch"])
-                    entry["val"] = float(entry["val"])
-                    data.append(entry)
-                except Exception:
-                    continue
+    for line in lines:
+        match = LOG_PATTERN.match(line.strip())
+        if not match:
+            continue
+        entry = match.groupdict()
+        try:
+            entry["timestamp"] = pd.to_datetime(entry["timestamp"])
+            entry["bd"] = int(entry["bd"])
+            entry["ch"] = int(entry["ch"])
+            entry["val"] = float(entry["val"])
+            data.append(entry)
+        except Exception:
+            continue
     return pd.DataFrame(data)
 
+
+def parse_caen_log(filepath):
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as handle:
+        return parse_caen_lines(handle)
+
+
 class PlotlyLiveViewer(QWidget):
-    def __init__(self, df, file_path):
+    def __init__(self):
         super().__init__()
-        self.setWindowTitle("CAEN Log Viewer v14")
-        self.setMinimumSize(1200, 800)
-        self.df = df
-        self.loaded_path = file_path
-        self.loaded_filename = os.path.basename(file_path)
+        self.df = pd.DataFrame()
+        self.loaded_path = ""
+        self.loaded_filename = ""
+        self.last_position = 0
         self.viewer = None
         self.viewer_ready = False
         self.trace_map = {}
         self.current_selection = ([], [])
         self.pending_new_data = []
         self.current_fig = None
+        self.channel_titles = {}
+        self.channel_title_inputs = {}
+        self.live_active = False
+
+        self.setMinimumSize(1200, 800)
+        self._update_window_title()
 
         layout = QVBoxLayout()
+
+        file_controls = QHBoxLayout()
+        file_controls.addWidget(QLabel("Loaded file:"))
+        self.file_path_input = QLineEdit()
+        self.file_path_input.setReadOnly(True)
+        self.file_path_input.setPlaceholderText("No file loaded")
+        self.open_file_button = QPushButton("Open File")
+        self.open_file_button.clicked.connect(self.open_file_dialog)
+        file_controls.addWidget(self.file_path_input)
+        file_controls.addWidget(self.open_file_button)
+        layout.addLayout(file_controls)
+
         controls = QHBoxLayout()
 
         self.chan_select = QListWidget()
         self.chan_select.setSelectionMode(QAbstractItemView.MultiSelection)
-        self.chan_select.setMaximumHeight(60)
-        for ch in sorted(df["ch"].unique()):
-            self.chan_select.addItem(QListWidgetItem(str(ch)))
+        self.chan_select.setMinimumWidth(70)
+        self.chan_select.setMaximumWidth(90)
+        self.chan_select.setSpacing(4)
+        self.chan_select.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chan_select.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.chan_select.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
         self.par_select = QListWidget()
         self.par_select.setSelectionMode(QAbstractItemView.MultiSelection)
         self.par_select.setMaximumHeight(60)
         self.par_select.setMinimumWidth(150)
-        for par in sorted(df["par"].unique()):
-            self.par_select.addItem(QListWidgetItem(par))
 
         self.plot_button = QPushButton("Plot Selection")
         self.plot_button.setMaximumHeight(40)
         self.plot_button.clicked.connect(self.generate_plots)
+
+        self.log_scale_checkbox = QCheckBox("Log Y")
+        self.log_scale_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
         self.interval_input = QSpinBox()
         self.interval_input.setRange(1, 60)
@@ -81,16 +124,43 @@ class PlotlyLiveViewer(QWidget):
         self.toggle_button.setCheckable(True)
         self.toggle_button.clicked.connect(self.toggle_live)
 
+        self.export_canvas_button = QPushButton("Export Canvas PDF")
+        self.export_canvas_button.clicked.connect(self.export_canvas_pdf)
+
+        self.channel_titles_scroll = QScrollArea()
+        self.channel_titles_scroll.setWidgetResizable(True)
+        self.channel_titles_scroll.setMinimumWidth(240)
+        self.channel_titles_scroll.setMaximumWidth(320)
+        self.channel_titles_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.channel_titles_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.channel_titles_widget = QWidget()
+        self.channel_titles_layout = QVBoxLayout(self.channel_titles_widget)
+        self.channel_titles_layout.setContentsMargins(8, 2, 8, 2)
+        self.channel_titles_layout.setSpacing(4)
+        self.channel_titles_scroll.setWidget(self.channel_titles_widget)
+        self.chan_select.verticalScrollBar().valueChanged.connect(
+            self.channel_titles_scroll.verticalScrollBar().setValue
+        )
+        self.channel_titles_scroll.verticalScrollBar().valueChanged.connect(
+            self.chan_select.verticalScrollBar().setValue
+        )
+
+        self.channel_controls_widget = QWidget()
+        channel_controls_layout = QHBoxLayout(self.channel_controls_widget)
+        channel_controls_layout.setContentsMargins(0, 0, 0, 0)
+        channel_controls_layout.setSpacing(8)
+        channel_controls_layout.addWidget(self.chan_select)
+        channel_controls_layout.addWidget(self.channel_titles_scroll)
+
         controls.addWidget(QLabel("Channels:"))
-        controls.addWidget(self.chan_select)
+        controls.addWidget(self.channel_controls_widget)
         controls.addWidget(QLabel("Parameters:"))
         controls.addWidget(self.par_select)
         controls.addWidget(self.plot_button)
+        controls.addWidget(self.log_scale_checkbox)
         controls.addWidget(QLabel("Update every:"))
         controls.addWidget(self.interval_input)
         controls.addWidget(self.toggle_button)
-        self.export_canvas_button = QPushButton("Export Canvas PDF")
-        self.export_canvas_button.clicked.connect(self.export_canvas_pdf)
         controls.addWidget(self.export_canvas_button)
         layout.addLayout(controls)
 
@@ -104,55 +174,162 @@ class PlotlyLiveViewer(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_from_file)
-        self.last_position = os.path.getsize(file_path)
-        self.live_active = False
 
-    def toggle_live(self):
-        interval = self.interval_input.value()
-        if self.toggle_button.isChecked():
-            self.toggle_button.setText("Stop Live")
-            self.timer.start(interval * 1000)
-            self.live_active = True
-        else:
-            self.toggle_button.setText("Start Live")
-            self.timer.stop()
-            self.live_active = False
+        self._set_loaded_state(False)
+        self._update_channel_titles_height()
 
-    def update_from_file(self):
+    def open_file_dialog(self):
+        start_dir = os.path.dirname(self.loaded_path) if self.loaded_path else ""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open CAEN Log File",
+            start_dir,
+            "Log Files (*.log *.txt)",
+        )
+        if file_path:
+            self.load_file(file_path)
+
+    def load_file(self, filepath):
         try:
-            with open(self.loaded_path, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(self.last_position)
-                new_lines = f.readlines()
-                self.last_position = f.tell()
-            if not new_lines:
-                return
-
-            pattern = re.compile(
-                r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
-                r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
+            df = parse_caen_log(filepath)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "File Load Failed",
+                f"Could not open the selected file:\n{exc}",
             )
-            new_data = []
-            for line in new_lines:
-                match = pattern.match(line.strip())
-                if match:
-                    entry = match.groupdict()
-                    try:
-                        entry["timestamp"] = pd.to_datetime(entry["timestamp"])
-                        entry["bd"] = int(entry["bd"])
-                        entry["ch"] = int(entry["ch"])
-                        entry["val"] = float(entry["val"])
-                        new_data.append(entry)
-                    except:
-                        continue
+            return
 
-            if new_data:
-                new_df = pd.DataFrame(new_data)
-                self.df = pd.concat([self.df, new_df], ignore_index=True)
-                self.extend_plot(new_df)
-        except Exception as e:
-            print(f">> Live update error: {e}")
+        if df.empty:
+            QMessageBox.warning(
+                self,
+                "No Data Loaded",
+                "The selected file did not contain any valid CAEN log entries.",
+            )
+            return
 
-    def generate_plots(self):
+        self._stop_live_mode()
+        self._clear_plot()
+
+        self.df = df.sort_values("timestamp").reset_index(drop=True)
+        self.loaded_path = filepath
+        self.loaded_filename = os.path.basename(filepath)
+        self.last_position = os.path.getsize(filepath)
+        self.trace_map = {}
+        self.current_selection = ([], [])
+        self.pending_new_data.clear()
+        self.channel_titles = {}
+        self.file_path_input.setText(filepath)
+        self.file_path_input.setCursorPosition(0)
+
+        self._rebuild_data_controls()
+        self._set_loaded_state(True)
+        self._update_window_title()
+
+    def _update_window_title(self):
+        if self.loaded_filename:
+            self.setWindowTitle(f"{APP_TITLE} - {self.loaded_filename}")
+        else:
+            self.setWindowTitle(APP_TITLE)
+
+    def _set_loaded_state(self, loaded):
+        self.chan_select.setEnabled(loaded)
+        self.channel_controls_widget.setEnabled(loaded)
+        self.par_select.setEnabled(loaded)
+        self.plot_button.setEnabled(loaded)
+        self.log_scale_checkbox.setEnabled(loaded)
+        self.interval_input.setEnabled(loaded)
+        self.toggle_button.setEnabled(loaded)
+        self.export_canvas_button.setEnabled(loaded and self.current_fig is not None)
+
+    def _rebuild_data_controls(self):
+        self.chan_select.clear()
+        self.par_select.clear()
+        self._clear_layout(self.channel_titles_layout)
+        self.channel_title_inputs = {}
+
+        channels = sorted(self.df["ch"].unique())
+        parameters = sorted(self.df["par"].unique())
+
+        for ch in channels:
+            channel_item = QListWidgetItem(str(ch))
+            self.chan_select.addItem(channel_item)
+            title_input = QLineEdit()
+            title_input.setPlaceholderText("Optional title")
+            title_input.setMinimumHeight(28)
+            title_input.editingFinished.connect(
+                lambda ch=ch: self._handle_channel_title_change(ch)
+            )
+            self.channel_title_inputs[ch] = title_input
+            self.channel_titles_layout.addWidget(title_input)
+            channel_item.setSizeHint(QSize(channel_item.sizeHint().width(), title_input.sizeHint().height()))
+
+        for par in parameters:
+            self.par_select.addItem(QListWidgetItem(par))
+
+        self._update_channel_titles_height()
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def _update_channel_titles_height(self):
+        row_count = len(self.channel_title_inputs)
+        visible_rows = min(max(row_count, 1), 2)
+        first_input = next(iter(self.channel_title_inputs.values()), None)
+        row_height = first_input.sizeHint().height() if first_input is not None else 28
+        spacing = self.channel_titles_layout.spacing()
+        margins = self.channel_titles_layout.contentsMargins()
+        content_height = (
+            margins.top()
+            + margins.bottom()
+            + visible_rows * row_height
+            + max(0, visible_rows - 1) * spacing
+        )
+        scroll_height = content_height + (self.channel_titles_scroll.frameWidth() * 2)
+        self.channel_titles_scroll.setFixedHeight(scroll_height)
+        self.chan_select.setFixedHeight(scroll_height)
+        self.channel_controls_widget.setMaximumHeight(scroll_height)
+
+    def _handle_channel_title_change(self, channel):
+        title_input = self.channel_title_inputs.get(channel)
+        if title_input is None:
+            return
+
+        custom_title = title_input.text().strip()
+        if custom_title:
+            self.channel_titles[channel] = custom_title
+        else:
+            self.channel_titles.pop(channel, None)
+
+        selected_channels, selected_parameters = self._selected_channels(), self._selected_parameters()
+        if channel in selected_channels and selected_parameters:
+            self.generate_plots()
+
+    def _selected_channels(self):
+        return [int(item.text()) for item in self.chan_select.selectedItems()]
+
+    def _selected_parameters(self):
+        return [item.text() for item in self.par_select.selectedItems()]
+
+    def _channel_display_name(self, channel):
+        return self.channel_titles.get(channel, f"ch {channel}")
+
+    def _stop_live_mode(self):
+        self.timer.stop()
+        self.live_active = False
+        self.toggle_button.blockSignals(True)
+        self.toggle_button.setChecked(False)
+        self.toggle_button.blockSignals(False)
+        self.toggle_button.setText("Start Live")
+
+    def _clear_plot(self):
         for i in reversed(range(self.plot_layout.count())):
             widget = self.plot_layout.itemAt(i).widget()
             if widget:
@@ -161,16 +338,71 @@ class PlotlyLiveViewer(QWidget):
             self.viewer.deleteLater()
             self.viewer = None
         self.current_fig = None
+        self.viewer_ready = False
+        self.trace_map = {}
+        self.pending_new_data.clear()
+        self.export_canvas_button.setEnabled(False)
 
-        selected_ch = [int(item.text()) for item in self.chan_select.selectedItems()]
-        selected_par = [item.text() for item in self.par_select.selectedItems()]
+    def toggle_live(self):
+        if not self.loaded_path:
+            self._stop_live_mode()
+            return
+
+        interval = self.interval_input.value()
+        if self.toggle_button.isChecked():
+            self.toggle_button.setText("Stop Live")
+            self.timer.start(interval * 1000)
+            self.live_active = True
+        else:
+            self._stop_live_mode()
+
+    def update_from_file(self):
+        if not self.loaded_path:
+            return
+
+        try:
+            with open(self.loaded_path, "r", encoding="utf-8", errors="ignore") as handle:
+                handle.seek(self.last_position)
+                new_lines = handle.readlines()
+                self.last_position = handle.tell()
+            if not new_lines:
+                return
+
+            new_df = parse_caen_lines(new_lines)
+            if new_df.empty:
+                return
+
+            new_df = new_df.sort_values("timestamp").reset_index(drop=True)
+            self.df = pd.concat([self.df, new_df], ignore_index=True)
+            self.extend_plot(new_df)
+        except Exception as exc:
+            print(f">> Live update error: {exc}")
+
+    def on_plot_option_changed(self):
+        if self._selected_channels() and self._selected_parameters():
+            self.generate_plots()
+
+    def _filter_group_for_plot(self, group):
+        if not self.log_scale_checkbox.isChecked():
+            return group
+        return group[group["val"] > 0].copy()
+
+    def generate_plots(self):
+        self._clear_plot()
+
+        if self.df.empty:
+            self.current_selection = ([], [])
+            return
+
+        selected_ch = self._selected_channels()
+        selected_par = self._selected_parameters()
+        self.current_selection = (selected_ch, selected_par)
         if not selected_ch or not selected_par:
             return
 
         df_filtered = self.df[
-            self.df["ch"].isin(selected_ch) &
-            self.df["par"].isin(selected_par)
-        ]
+            self.df["ch"].isin(selected_ch) & self.df["par"].isin(selected_par)
+        ].sort_values("timestamp")
         if df_filtered.empty:
             return
 
@@ -181,6 +413,7 @@ class PlotlyLiveViewer(QWidget):
         ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
         trace_map = {}
         legend_channels_seen = set()
+        axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
 
         for i, par in enumerate(selected_par, start=1):
             df_par = df_filtered[df_filtered["par"] == par]
@@ -189,35 +422,35 @@ class PlotlyLiveViewer(QWidget):
                 df_ch = df_par[df_par["ch"] == ch]
                 if df_ch.empty:
                     continue
+                df_ch = self._filter_group_for_plot(df_ch)
+                if df_ch.empty:
+                    continue
+
                 show_channel_legend = ch not in legend_channels_seen
                 fig.add_trace(
                     go.Scatter(
                         x=df_ch["timestamp"],
                         y=df_ch["val"],
                         mode="lines+markers",
-                        name=f"ch {ch}",
+                        name=self._channel_display_name(ch),
                         legendgroup=f"ch {ch}",
                         marker=dict(color=ch_to_color.get(ch)),
-                        showlegend=show_channel_legend
+                        showlegend=show_channel_legend,
                     ),
-                    row=i, col=1
+                    row=i,
+                    col=1,
                 )
                 legend_channels_seen.add(ch)
                 trace_map[(par, ch)] = len(fig.data) - 1
 
-            fig.update_yaxes(title_text=par, row=i, col=1)
+            fig.update_yaxes(title_text=par, type=axis_type, row=i, col=1)
 
         fig.update_layout(
             height=300 * rows,
             hovermode="x unified",
             title_text=self.loaded_filename,
             margin=dict(r=220),
-            legend=dict(
-                x=1.02,
-                y=1,
-                xanchor="left",
-                yanchor="top"
-            )
+            legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
         )
 
         viewer = QWebEngineView()
@@ -247,7 +480,7 @@ window.plotlyRenderReady = false;
             full_html=True,
             include_plotlyjs="cdn",
             div_id="plotly-live-view",
-            post_script=plot_ready_script
+            post_script=plot_ready_script,
         )
         js_mapping = json.dumps({f"{par}|{ch}": idx for (par, ch), idx in trace_map.items()})
         html_content += f"""
@@ -265,27 +498,27 @@ window.traceNameToIndex = {js_mapping};
         self.viewer = viewer
         self.current_fig = fig
         self.trace_map = trace_map
-        self.current_selection = (selected_ch, selected_par)
+        self.export_canvas_button.setEnabled(True)
 
     def export_canvas_pdf(self):
         if self.current_fig is None:
             QMessageBox.information(
                 self,
                 "No Plot Available",
-                "Generate a plot before exporting the canvas."
+                "Generate a plot before exporting the canvas.",
             )
             return
 
         timestamp_suffix = datetime.now().strftime("_%Y_%m_%d_%H_%M")
         default_export_name = os.path.join(
             os.path.dirname(self.loaded_path),
-            os.path.splitext(self.loaded_filename)[0] + timestamp_suffix + ".pdf"
+            os.path.splitext(self.loaded_filename)[0] + timestamp_suffix + ".pdf",
         )
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export current canvas as PDF",
             default_export_name,
-            "PDF Files (*.pdf)"
+            "PDF Files (*.pdf)",
         )
         if not file_path:
             return
@@ -302,7 +535,7 @@ window.traceNameToIndex = {js_mapping};
             QMessageBox.warning(
                 self,
                 "Export Failed",
-                f"Plotly could not export the current figure to PDF:\n{exc}"
+                f"Plotly could not export the current figure to PDF:\n{exc}",
             )
             return
 
@@ -310,7 +543,7 @@ window.traceNameToIndex = {js_mapping};
         QMessageBox.information(
             self,
             "Export Complete",
-            f"Saved PDF to:\n{file_path}"
+            f"Saved PDF to:\n{file_path}",
         )
 
     def _plot_ready_js(self):
@@ -329,8 +562,8 @@ window.traceNameToIndex = {js_mapping};
         """
 
     def _reset_export_button(self):
-        self.export_canvas_button.setEnabled(True)
         self.export_canvas_button.setText("Export Canvas PDF")
+        self.export_canvas_button.setEnabled(self.current_fig is not None)
 
     def on_viewer_load_finished(self, ok):
         self.viewer_ready = False
@@ -342,8 +575,11 @@ window.traceNameToIndex = {js_mapping};
             return
         viewer.page().runJavaScript(
             self._plot_ready_js(),
-            lambda ready, current_viewer=viewer, current_attempt=attempt:
-                self._handle_ready_check(current_viewer, current_attempt, bool(ready))
+            lambda ready, current_viewer=viewer, current_attempt=attempt: self._handle_ready_check(
+                current_viewer,
+                current_attempt,
+                bool(ready),
+            ),
         )
 
     def _handle_ready_check(self, viewer, attempt, ready):
@@ -361,8 +597,10 @@ window.traceNameToIndex = {js_mapping};
             return
         QTimer.singleShot(
             100,
-            lambda current_viewer=viewer, next_attempt=attempt + 1:
-                self._poll_viewer_ready(current_viewer, next_attempt)
+            lambda current_viewer=viewer, next_attempt=attempt + 1: self._poll_viewer_ready(
+                current_viewer,
+                next_attempt,
+            ),
         )
 
     def extend_plot(self, new_df):
@@ -381,17 +619,22 @@ window.traceNameToIndex = {js_mapping};
             return
 
         df_filtered = new_df[
-            new_df["ch"].isin(selected_ch) &
-            new_df["par"].isin(selected_par)
+            new_df["ch"].isin(selected_ch) & new_df["par"].isin(selected_par)
         ]
         if df_filtered.empty:
             return
 
         df_filtered = df_filtered.sort_values("timestamp")
         for (par, ch), group in df_filtered.groupby(["par", "ch"]):
+            group = self._filter_group_for_plot(group)
+            if group.empty:
+                continue
+
             trace_idx = self.trace_map.get((par, ch))
             if trace_idx is None:
-                continue
+                self.generate_plots()
+                return
+
             figure_timestamps = group["timestamp"].tolist()
             timestamps = group["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S.%f").tolist()
             values = group["val"].tolist()
@@ -399,11 +642,13 @@ window.traceNameToIndex = {js_mapping};
                 current_trace = self.current_fig.data[trace_idx]
                 current_trace.x = list(current_trace.x) + figure_timestamps
                 current_trace.y = list(current_trace.y) + values
-            payload = json.dumps({
-                "trace_index": trace_idx,
-                "x": timestamps,
-                "y": values
-            })
+            payload = json.dumps(
+                {
+                    "trace_index": trace_idx,
+                    "x": timestamps,
+                    "y": values,
+                }
+            )
             js_code = f"""
             (function() {{
                 if (!window.Plotly || !window.plotlyLiveViewId) return;
@@ -429,15 +674,9 @@ window.traceNameToIndex = {js_mapping};
             """
             self.viewer.page().runJavaScript(js_code)
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    file_path, _ = QFileDialog.getOpenFileName(None, "Open CAEN Log File", "", "Log Files (*.log *.txt)")
-    if not file_path:
-        sys.exit()
-    df = parse_caen_log(file_path)
-    if df.empty:
-        print("No valid entries found in the log.")
-        sys.exit()
-    viewer = PlotlyLiveViewer(df, file_path)
+    viewer = PlotlyLiveViewer()
     viewer.show()
     sys.exit(app.exec_())
