@@ -25,10 +25,10 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QLineEdit,
     QCheckBox,
-    QDateTimeEdit,
+    QSlider,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer, Qt, QSize, QDateTime
+from PyQt5.QtCore import QTimer, Qt, QSize
 
 APP_TITLE = "CAEN Log Viewer v15"
 MAX_POINTS_PER_TRACE = 5_000  # downsample traces above this for fast rendering
@@ -96,23 +96,32 @@ class PlotlyLiveViewer(QWidget):
         file_controls.addWidget(self.open_file_button)
         layout.addLayout(file_controls)
 
+        self._t_min = None  # pd.Timestamp; set on file load
+
         date_controls = QHBoxLayout()
+
         date_controls.addWidget(QLabel("From:"))
-        self.start_dt = QDateTimeEdit()
-        self.start_dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.start_dt.setCalendarPopup(True)
-        self.start_dt.dateTimeChanged.connect(self.on_plot_option_changed)
-        date_controls.addWidget(self.start_dt)
-        date_controls.addWidget(QLabel("To:"))
-        self.end_dt = QDateTimeEdit()
-        self.end_dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.end_dt.setCalendarPopup(True)
-        self.end_dt.dateTimeChanged.connect(self.on_plot_option_changed)
-        date_controls.addWidget(self.end_dt)
+        self.start_label = QLabel("—")
+        self.start_label.setMinimumWidth(155)
+        date_controls.addWidget(self.start_label)
+        self.start_slider = QSlider(Qt.Horizontal)
+        self.start_slider.setRange(0, 0)
+        self.start_slider.valueChanged.connect(self._on_range_slider_changed)
+        date_controls.addWidget(self.start_slider, stretch=1)
+
+        date_controls.addWidget(QLabel("  To:"))
+        self.end_label = QLabel("—")
+        self.end_label.setMinimumWidth(155)
+        date_controls.addWidget(self.end_label)
+        self.end_slider = QSlider(Qt.Horizontal)
+        self.end_slider.setRange(0, 0)
+        self.end_slider.valueChanged.connect(self._on_range_slider_changed)
+        date_controls.addWidget(self.end_slider, stretch=1)
+
         self.reset_range_button = QPushButton("Reset Range")
         self.reset_range_button.clicked.connect(self._reset_date_range)
         date_controls.addWidget(self.reset_range_button)
-        date_controls.addStretch()
+
         layout.addLayout(date_controls)
 
         controls = QHBoxLayout()
@@ -257,23 +266,44 @@ class PlotlyLiveViewer(QWidget):
         self._set_loaded_state(True)
         self._update_window_title()
 
+    def _slider_to_dt(self, value):
+        return self._t_min + pd.Timedelta(seconds=value)
+
+    def _on_range_slider_changed(self):
+        if self._t_min is None:
+            return
+        # Keep start <= end
+        if self.start_slider.value() > self.end_slider.value():
+            sender = self.sender()
+            if sender is self.start_slider:
+                self.start_slider.blockSignals(True)
+                self.start_slider.setValue(self.end_slider.value())
+                self.start_slider.blockSignals(False)
+            else:
+                self.end_slider.blockSignals(True)
+                self.end_slider.setValue(self.start_slider.value())
+                self.end_slider.blockSignals(False)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        self.start_label.setText(self._slider_to_dt(self.start_slider.value()).strftime(fmt))
+        self.end_label.setText(self._slider_to_dt(self.end_slider.value()).strftime(fmt))
+        self.on_plot_option_changed()
+
     def _reset_date_range(self):
         if self.df.empty:
             return
-        t_min = self.df["timestamp"].min().to_pydatetime()
-        t_max = self.df["timestamp"].max().to_pydatetime()
-        for w in (self.start_dt, self.end_dt):
+        self._t_min = self.df["timestamp"].min()
+        total_seconds = int((self.df["timestamp"].max() - self._t_min).total_seconds())
+        for w in (self.start_slider, self.end_slider):
             w.blockSignals(True)
-        self.start_dt.setDateTime(QDateTime(
-            t_min.year, t_min.month, t_min.day,
-            t_min.hour, t_min.minute, t_min.second,
-        ))
-        self.end_dt.setDateTime(QDateTime(
-            t_max.year, t_max.month, t_max.day,
-            t_max.hour, t_max.minute, t_max.second,
-        ))
-        for w in (self.start_dt, self.end_dt):
+            w.setRange(0, max(total_seconds, 1))
+        self.start_slider.setValue(0)
+        self.end_slider.setValue(total_seconds)
+        for w in (self.start_slider, self.end_slider):
             w.blockSignals(False)
+        # Update labels without triggering a replot
+        fmt = "%Y-%m-%d %H:%M:%S"
+        self.start_label.setText(self._t_min.strftime(fmt))
+        self.end_label.setText(self._slider_to_dt(total_seconds).strftime(fmt))
 
     def _update_window_title(self):
         if self.loaded_filename:
@@ -290,8 +320,8 @@ class PlotlyLiveViewer(QWidget):
         self.interval_input.setEnabled(loaded)
         self.toggle_button.setEnabled(loaded)
         self.export_canvas_button.setEnabled(loaded and self.current_fig is not None)
-        self.start_dt.setEnabled(loaded)
-        self.end_dt.setEnabled(loaded)
+        self.start_slider.setEnabled(loaded)
+        self.end_slider.setEnabled(loaded)
         self.reset_range_button.setEnabled(loaded)
 
     def _rebuild_data_controls(self):
@@ -455,8 +485,8 @@ class PlotlyLiveViewer(QWidget):
     
             axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
 
-            t_start = self.start_dt.dateTime().toPyDateTime()
-            t_end = self.end_dt.dateTime().toPyDateTime()
+            t_start = self._slider_to_dt(self.start_slider.value())
+            t_end = self._slider_to_dt(self.end_slider.value())
             df_filtered = self.df[
                 self.df["ch"].isin(selected_ch)
                 & self.df["par"].isin(selected_par)
