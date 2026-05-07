@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (
     QSlider,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer, Qt, QSize, QUrl
+from PyQt5.QtCore import QTimer, Qt, QSize, QUrl, QMarginsF
+from PyQt5.QtGui import QPageLayout, QPageSize
 
 APP_TITLE = "CAEN Log Viewer v15"
 
@@ -623,23 +624,15 @@ class PlotlyLiveViewer(QWidget):
         self.export_canvas_button.setEnabled(False)
         self.export_canvas_button.setText("Exporting...")
 
-        try:
-            self.current_fig.write_image(file_path, format="pdf")
-        except Exception as exc:
-            self._reset_export_button()
-            QMessageBox.warning(
-                self,
-                "Export Failed",
-                f"Plotly could not export the current figure to PDF:\n{exc}",
-            )
-            return
-
-        self._reset_export_button()
-        QMessageBox.information(
-            self,
-            "Export Complete",
-            f"Saved PDF to:\n{file_path}",
+        page_layout = QPageLayout(
+            QPageSize(QPageSize.A4),
+            QPageLayout.Landscape,
+            QMarginsF(10, 10, 10, 10),
+            QPageLayout.Millimeter,
         )
+        self._pending_pdf_path = file_path
+        self.viewer.page().pdfPrintingFinished.connect(self._on_pdf_done)
+        self.viewer.page().printToPdf(file_path, page_layout)
 
     def _plot_ready_js(self):
         return """
@@ -659,6 +652,14 @@ class PlotlyLiveViewer(QWidget):
     def _reset_export_button(self):
         self.export_canvas_button.setText("Export Canvas PDF")
         self.export_canvas_button.setEnabled(self.current_fig is not None)
+
+    def _on_pdf_done(self, path, success):
+        self.viewer.page().pdfPrintingFinished.disconnect(self._on_pdf_done)
+        self._reset_export_button()
+        if success:
+            QMessageBox.information(self, "Export Complete", f"Saved PDF to:\n{path}")
+        else:
+            QMessageBox.warning(self, "Export Failed", f"PDF export failed for:\n{path}")
 
     def on_viewer_load_finished(self, ok):
         self.viewer_ready = False
