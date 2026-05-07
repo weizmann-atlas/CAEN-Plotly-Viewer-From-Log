@@ -32,7 +32,7 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer, Qt, QSize, QUrl
 
 APP_TITLE = "CAEN Log Viewer v15"
-MAX_POINTS_PER_TRACE = 5_000  # downsample traces above this for fast rendering
+
 LOG_PATTERN = re.compile(
     r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
     r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
@@ -148,10 +148,6 @@ class PlotlyLiveViewer(QWidget):
         self.log_scale_checkbox = QCheckBox("Log Y")
         self.log_scale_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
-        self.downsample_checkbox = QCheckBox("Downsample")
-        self.downsample_checkbox.setChecked(False)
-        self.downsample_checkbox.setToolTip(f"Limit each trace to {MAX_POINTS_PER_TRACE:,} points for faster rendering")
-        self.downsample_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
         self.interval_input = QSpinBox()
         self.interval_input.setRange(1, 60)
@@ -197,7 +193,7 @@ class PlotlyLiveViewer(QWidget):
         controls.addWidget(self.par_select)
         controls.addWidget(self.plot_button)
         controls.addWidget(self.log_scale_checkbox)
-        controls.addWidget(self.downsample_checkbox)
+
         controls.addWidget(QLabel("Update every:"))
         controls.addWidget(self.interval_input)
         controls.addWidget(self.toggle_button)
@@ -517,9 +513,6 @@ class PlotlyLiveViewer(QWidget):
                     except KeyError:
                         continue
 
-                    if self.downsample_checkbox.isChecked() and len(df_ch) > MAX_POINTS_PER_TRACE:
-                        step = max(1, len(df_ch) // MAX_POINTS_PER_TRACE)
-                        df_ch = df_ch.iloc[::step]
 
                     show_channel_legend = ch not in legend_channels_seen
                     fig.add_trace(
