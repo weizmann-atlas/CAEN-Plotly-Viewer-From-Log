@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import json
+import tempfile
 import traceback
 from datetime import datetime
 
@@ -28,7 +29,7 @@ from PyQt5.QtWidgets import (
     QSlider,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtCore import QTimer, Qt, QSize, QUrl
 
 APP_TITLE = "CAEN Log Viewer v15"
 MAX_POINTS_PER_TRACE = 5_000  # downsample traces above this for fast rendering
@@ -148,7 +149,7 @@ class PlotlyLiveViewer(QWidget):
         self.log_scale_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
         self.downsample_checkbox = QCheckBox("Downsample")
-        self.downsample_checkbox.setChecked(True)
+        self.downsample_checkbox.setChecked(False)
         self.downsample_checkbox.setToolTip(f"Limit each trace to {MAX_POINTS_PER_TRACE:,} points for faster rendering")
         self.downsample_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
@@ -582,9 +583,14 @@ class PlotlyLiveViewer(QWidget):
     window.traceNameToIndex = {js_mapping};
     </script>
     """
+            # setHtml() has a 2 MB limit in Qt WebEngine; writing to a temp
+            # file and loading via file URL bypasses this restriction entirely.
+            tmp_path = os.path.join(tempfile.gettempdir(), "caen_plot.html")
+            with open(tmp_path, "w", encoding="utf-8") as _f:
+                _f.write(html_content)
             self.viewer_ready = False
             self.pending_new_data.clear()
-            viewer.setHtml(html_content)
+            viewer.load(QUrl.fromLocalFile(tmp_path))
             viewer.setMinimumHeight(400)
             viewer.loadFinished.connect(self.on_viewer_load_finished)
             self.plot_layout.addWidget(viewer)
