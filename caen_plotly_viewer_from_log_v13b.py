@@ -566,7 +566,7 @@ class PlotlyLiveViewer(QWidget):
     """
             html_content = fig.to_html(
                 full_html=True,
-                include_plotlyjs="cdn",
+                include_plotlyjs=True,
                 div_id="plotly-live-view",
                 post_script=plot_ready_script,
             )
