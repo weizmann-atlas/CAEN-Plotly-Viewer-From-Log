@@ -118,6 +118,11 @@ class PlotlyLiveViewer(QWidget):
         self.log_scale_checkbox = QCheckBox("Log Y")
         self.log_scale_checkbox.stateChanged.connect(self.on_plot_option_changed)
 
+        self.downsample_checkbox = QCheckBox("Downsample")
+        self.downsample_checkbox.setChecked(True)
+        self.downsample_checkbox.setToolTip(f"Limit each trace to {MAX_POINTS_PER_TRACE:,} points for faster rendering")
+        self.downsample_checkbox.stateChanged.connect(self.on_plot_option_changed)
+
         self.interval_input = QSpinBox()
         self.interval_input.setRange(1, 60)
         self.interval_input.setValue(5)
@@ -162,6 +167,7 @@ class PlotlyLiveViewer(QWidget):
         controls.addWidget(self.par_select)
         controls.addWidget(self.plot_button)
         controls.addWidget(self.log_scale_checkbox)
+        controls.addWidget(self.downsample_checkbox)
         controls.addWidget(QLabel("Update every:"))
         controls.addWidget(self.interval_input)
         controls.addWidget(self.toggle_button)
@@ -433,7 +439,7 @@ class PlotlyLiveViewer(QWidget):
                     except KeyError:
                         continue
 
-                    if len(df_ch) > MAX_POINTS_PER_TRACE:
+                    if self.downsample_checkbox.isChecked() and len(df_ch) > MAX_POINTS_PER_TRACE:
                         step = max(1, len(df_ch) // MAX_POINTS_PER_TRACE)
                         df_ch = df_ch.iloc[::step]
 
