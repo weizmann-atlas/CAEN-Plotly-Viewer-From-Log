@@ -33,6 +33,7 @@ a = Analysis(
         "PyQt5.QtWebEngineCore",
         "PyQt5.QtWebChannel",
         "PyQt5.QtPrintSupport",
+        "PyQt5.QtSvg",
         # pandas C extension modules that are commonly missed
         "pandas._libs.tslibs.np_datetime",
         "pandas._libs.tslibs.nattype",

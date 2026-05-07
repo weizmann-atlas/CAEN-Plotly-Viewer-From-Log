@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import json
+import base64
 import tempfile
 import traceback
 from datetime import datetime
@@ -30,7 +31,9 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer, Qt, QSize, QUrl, QMarginsF
-from PyQt5.QtGui import QPageLayout, QPageSize
+from PyQt5.QtGui import QPageLayout, QPageSize, QPainter
+from PyQt5.QtSvg import QSvgRenderer
+from PyQt5.QtPrintSupport import QPrinter
 
 APP_TITLE = "CAEN Log Viewer v15"
 
@@ -621,18 +624,27 @@ class PlotlyLiveViewer(QWidget):
         if not file_path.lower().endswith(".pdf"):
             file_path += ".pdf"
 
+        self._pending_pdf_path = file_path
         self.export_canvas_button.setEnabled(False)
         self.export_canvas_button.setText("Exporting...")
 
-        page_layout = QPageLayout(
-            QPageSize(QPageSize.A4),
-            QPageLayout.Landscape,
-            QMarginsF(10, 10, 10, 10),
-            QPageLayout.Millimeter,
-        )
-        self._pending_pdf_path = file_path
-        self.viewer.page().pdfPrintingFinished.connect(self._on_pdf_done)
-        self.viewer.page().printToPdf(file_path, page_layout)
+        # Ask Plotly.js to render the figure as SVG and store in a global.
+        # printToPdf() hangs because Plotly's rAF loops never reach idle;
+        # this path uses Plotly's own JS API then Qt's vector SVG renderer.
+        self.viewer.page().runJavaScript("""
+            window._caenPdfSvg = null;
+            (function() {
+                var el = document.getElementById('plotly-live-view');
+                if (!el || !window.Plotly) { window._caenPdfSvg = 'ERROR:no element'; return; }
+                Plotly.toImage(el, {format: 'svg', width: el.offsetWidth, height: el.offsetHeight})
+                    .then(function(url) { window._caenPdfSvg = url; })
+                    .catch(function(e) { window._caenPdfSvg = 'ERROR:' + e; });
+            })();
+        """)
+        self._pdf_poll_timer = QTimer(self)
+        self._pdf_poll_timer.setInterval(200)
+        self._pdf_poll_timer.timeout.connect(self._poll_svg_export)
+        self._pdf_poll_timer.start()
 
     def _plot_ready_js(self):
         return """
@@ -653,13 +665,45 @@ class PlotlyLiveViewer(QWidget):
         self.export_canvas_button.setText("Export Canvas PDF")
         self.export_canvas_button.setEnabled(self.current_fig is not None)
 
-    def _on_pdf_done(self, path, success):
-        self.viewer.page().pdfPrintingFinished.disconnect(self._on_pdf_done)
+    def _poll_svg_export(self):
+        self.viewer.page().runJavaScript("window._caenPdfSvg", self._handle_svg_result)
+
+    def _handle_svg_result(self, result):
+        if result is None:
+            return  # Plotly.toImage not finished yet
+        self._pdf_poll_timer.stop()
+        self._pdf_poll_timer = None
+
+        if not isinstance(result, str) or result.startswith("ERROR"):
+            self._reset_export_button()
+            QMessageBox.warning(self, "Export Failed", f"Could not render SVG:\n{result}")
+            return
+
+        prefix = "data:image/svg+xml;base64,"
+        if not result.startswith(prefix):
+            self._reset_export_button()
+            QMessageBox.warning(self, "Export Failed", "Unexpected SVG data format.")
+            return
+
+        svg_bytes = base64.b64decode(result[len(prefix):])
+
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFileName(self._pending_pdf_path)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setPageLayout(QPageLayout(
+            QPageSize(QPageSize.A4),
+            QPageLayout.Landscape,
+            QMarginsF(10, 10, 10, 10),
+            QPageLayout.Millimeter,
+        ))
+
+        renderer = QSvgRenderer(svg_bytes)
+        painter = QPainter(printer)
+        renderer.render(painter)
+        painter.end()
+
         self._reset_export_button()
-        if success:
-            QMessageBox.information(self, "Export Complete", f"Saved PDF to:\n{path}")
-        else:
-            QMessageBox.warning(self, "Export Failed", f"PDF export failed for:\n{path}")
+        QMessageBox.information(self, "Export Complete", f"Saved PDF to:\n{self._pending_pdf_path}")
 
     def on_viewer_load_finished(self, ok):
         self.viewer_ready = False
