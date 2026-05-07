@@ -517,7 +517,7 @@ class PlotlyLiveViewer(QWidget):
 
                     show_channel_legend = ch not in legend_channels_seen
                     fig.add_trace(
-                        go.Scattergl(
+                        go.Scatter(
                             x=df_ch["timestamp"],
                             y=df_ch["val"],
                             mode="lines+markers",
