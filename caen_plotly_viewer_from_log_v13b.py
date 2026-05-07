@@ -25,9 +25,10 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QLineEdit,
     QCheckBox,
+    QDateTimeEdit,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtCore import QTimer, Qt, QSize, QDateTime
 
 APP_TITLE = "CAEN Log Viewer v15"
 MAX_POINTS_PER_TRACE = 5_000  # downsample traces above this for fast rendering
@@ -94,6 +95,25 @@ class PlotlyLiveViewer(QWidget):
         file_controls.addWidget(self.file_path_input)
         file_controls.addWidget(self.open_file_button)
         layout.addLayout(file_controls)
+
+        date_controls = QHBoxLayout()
+        date_controls.addWidget(QLabel("From:"))
+        self.start_dt = QDateTimeEdit()
+        self.start_dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.start_dt.setCalendarPopup(True)
+        self.start_dt.dateTimeChanged.connect(self.on_plot_option_changed)
+        date_controls.addWidget(self.start_dt)
+        date_controls.addWidget(QLabel("To:"))
+        self.end_dt = QDateTimeEdit()
+        self.end_dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.end_dt.setCalendarPopup(True)
+        self.end_dt.dateTimeChanged.connect(self.on_plot_option_changed)
+        date_controls.addWidget(self.end_dt)
+        self.reset_range_button = QPushButton("Reset Range")
+        self.reset_range_button.clicked.connect(self._reset_date_range)
+        date_controls.addWidget(self.reset_range_button)
+        date_controls.addStretch()
+        layout.addLayout(date_controls)
 
         controls = QHBoxLayout()
 
@@ -222,6 +242,7 @@ class PlotlyLiveViewer(QWidget):
         self._clear_plot()
 
         self.df = df.sort_values("timestamp").reset_index(drop=True)
+        self._reset_date_range()
         self.loaded_path = filepath
         self.loaded_filename = os.path.basename(filepath)
         self.last_position = os.path.getsize(filepath)
@@ -235,6 +256,24 @@ class PlotlyLiveViewer(QWidget):
         self._rebuild_data_controls()
         self._set_loaded_state(True)
         self._update_window_title()
+
+    def _reset_date_range(self):
+        if self.df.empty:
+            return
+        t_min = self.df["timestamp"].min().to_pydatetime()
+        t_max = self.df["timestamp"].max().to_pydatetime()
+        for w in (self.start_dt, self.end_dt):
+            w.blockSignals(True)
+        self.start_dt.setDateTime(QDateTime(
+            t_min.year, t_min.month, t_min.day,
+            t_min.hour, t_min.minute, t_min.second,
+        ))
+        self.end_dt.setDateTime(QDateTime(
+            t_max.year, t_max.month, t_max.day,
+            t_max.hour, t_max.minute, t_max.second,
+        ))
+        for w in (self.start_dt, self.end_dt):
+            w.blockSignals(False)
 
     def _update_window_title(self):
         if self.loaded_filename:
@@ -251,6 +290,9 @@ class PlotlyLiveViewer(QWidget):
         self.interval_input.setEnabled(loaded)
         self.toggle_button.setEnabled(loaded)
         self.export_canvas_button.setEnabled(loaded and self.current_fig is not None)
+        self.start_dt.setEnabled(loaded)
+        self.end_dt.setEnabled(loaded)
+        self.reset_range_button.setEnabled(loaded)
 
     def _rebuild_data_controls(self):
         self.chan_select.clear()
@@ -413,8 +455,13 @@ class PlotlyLiveViewer(QWidget):
     
             axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
 
+            t_start = self.start_dt.dateTime().toPyDateTime()
+            t_end = self.end_dt.dateTime().toPyDateTime()
             df_filtered = self.df[
-                self.df["ch"].isin(selected_ch) & self.df["par"].isin(selected_par)
+                self.df["ch"].isin(selected_ch)
+                & self.df["par"].isin(selected_par)
+                & (self.df["timestamp"] >= t_start)
+                & (self.df["timestamp"] <= t_end)
             ]
             if axis_type == "log":
                 df_filtered = df_filtered[df_filtered["val"] > 0]
