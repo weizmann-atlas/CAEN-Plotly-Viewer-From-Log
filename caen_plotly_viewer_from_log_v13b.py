@@ -1,6 +1,8 @@
 import sys
 import os
 import re
+import tempfile
+import traceback
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -8,7 +10,7 @@ from plotly.subplots import make_subplots
 from PyQt5.QtWidgets import (
     QApplication, QVBoxLayout, QWidget, QFileDialog,
     QListWidget, QLabel, QHBoxLayout, QPushButton, QScrollArea,
-    QAbstractItemView, QListWidgetItem, QSpinBox
+    QAbstractItemView, QListWidgetItem, QSpinBox, QMessageBox
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl, QTimer
@@ -145,6 +147,12 @@ class PlotlyLiveViewer(QWidget):
             print(f">> Live update error: {e}")
 
     def generate_plots(self):
+        try:
+            self._generate_plots_impl()
+        except Exception:
+            QMessageBox.critical(self, "Plot Error", traceback.format_exc())
+
+    def _generate_plots_impl(self):
         for i in reversed(range(self.plot_layout.count())):
             widget = self.plot_layout.itemAt(i).widget()
             if widget:
@@ -205,7 +213,8 @@ class PlotlyLiveViewer(QWidget):
             title_text=self.loaded_filename
         )
 
-        html_file = os.path.abspath("plot_subplots_v12e.html")
+        # Write to temp dir — CWD is '/' in a bundled .app, which is not writable
+        html_file = os.path.join(tempfile.gettempdir(), "caen_plot.html")
         fig.write_html(html_file)
 
         viewer = QWebEngineView()
