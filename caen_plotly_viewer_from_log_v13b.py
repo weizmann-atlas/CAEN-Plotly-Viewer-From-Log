@@ -30,33 +30,36 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer, Qt, QSize
 
 APP_TITLE = "CAEN Log Viewer v15"
+MAX_POINTS_PER_TRACE = 5_000  # downsample traces above this for fast rendering
 LOG_PATTERN = re.compile(
     r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
     r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
 )
 
 
+def _parse_text(text):
+    """Vectorised parser: findall runs in C, type conversions applied column-wise."""
+    matches = LOG_PATTERN.findall(text)
+    if not matches:
+        return pd.DataFrame(columns=["timestamp", "bd", "ch", "par", "val"])
+    df = pd.DataFrame(matches, columns=["timestamp", "bd", "ch", "par", "val"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["bd"] = pd.to_numeric(df["bd"], errors="coerce")
+    df["ch"] = pd.to_numeric(df["ch"], errors="coerce")
+    df["val"] = pd.to_numeric(df["val"], errors="coerce")
+    df = df.dropna()
+    df["bd"] = df["bd"].astype(int)
+    df["ch"] = df["ch"].astype(int)
+    return df
+
+
 def parse_caen_lines(lines):
-    data = []
-    for line in lines:
-        match = LOG_PATTERN.match(line.strip())
-        if not match:
-            continue
-        entry = match.groupdict()
-        try:
-            entry["timestamp"] = pd.to_datetime(entry["timestamp"])
-            entry["bd"] = int(entry["bd"])
-            entry["ch"] = int(entry["ch"])
-            entry["val"] = float(entry["val"])
-            data.append(entry)
-        except Exception:
-            continue
-    return pd.DataFrame(data)
+    return _parse_text("".join(lines))
 
 
 def parse_caen_log(filepath):
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as handle:
-        return parse_caen_lines(handle)
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        return _parse_text(f.read())
 
 
 class PlotlyLiveViewer(QWidget):
@@ -402,35 +405,41 @@ class PlotlyLiveViewer(QWidget):
             if not selected_ch or not selected_par:
                 return
     
+            axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
+
             df_filtered = self.df[
                 self.df["ch"].isin(selected_ch) & self.df["par"].isin(selected_par)
-            ].sort_values("timestamp")
+            ]
+            if axis_type == "log":
+                df_filtered = df_filtered[df_filtered["val"] > 0]
             if df_filtered.empty:
                 return
-    
+
+            # Group once — avoids one filter pass per (par, ch) combination
+            groups = df_filtered.groupby(["par", "ch"])
+
             rows = len(selected_par)
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03)
-    
+
             colors = px.colors.qualitative.Set1
             ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
             trace_map = {}
             legend_channels_seen = set()
-            axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
-    
+
             for i, par in enumerate(selected_par, start=1):
-                df_par = df_filtered[df_filtered["par"] == par]
-    
                 for ch in selected_ch:
-                    df_ch = df_par[df_par["ch"] == ch]
-                    if df_ch.empty:
+                    try:
+                        df_ch = groups.get_group((par, ch))
+                    except KeyError:
                         continue
-                    df_ch = self._filter_group_for_plot(df_ch)
-                    if df_ch.empty:
-                        continue
-    
+
+                    if len(df_ch) > MAX_POINTS_PER_TRACE:
+                        step = max(1, len(df_ch) // MAX_POINTS_PER_TRACE)
+                        df_ch = df_ch.iloc[::step]
+
                     show_channel_legend = ch not in legend_channels_seen
                     fig.add_trace(
-                        go.Scatter(
+                        go.Scattergl(
                             x=df_ch["timestamp"],
                             y=df_ch["val"],
                             mode="lines+markers",
@@ -444,7 +453,7 @@ class PlotlyLiveViewer(QWidget):
                     )
                     legend_channels_seen.add(ch)
                     trace_map[(par, ch)] = len(fig.data) - 1
-    
+
                 fig.update_yaxes(title_text=par, type=axis_type, row=i, col=1)
     
             fig.update_layout(
