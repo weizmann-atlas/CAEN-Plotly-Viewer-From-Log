@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import json
+import traceback
 from datetime import datetime
 
 import pandas as pd
@@ -388,117 +389,120 @@ class PlotlyLiveViewer(QWidget):
         return group[group["val"] > 0].copy()
 
     def generate_plots(self):
-        self._clear_plot()
+        try:
+            self._clear_plot()
 
-        if self.df.empty:
-            self.current_selection = ([], [])
-            return
-
-        selected_ch = self._selected_channels()
-        selected_par = self._selected_parameters()
-        self.current_selection = (selected_ch, selected_par)
-        if not selected_ch or not selected_par:
-            return
-
-        df_filtered = self.df[
-            self.df["ch"].isin(selected_ch) & self.df["par"].isin(selected_par)
-        ].sort_values("timestamp")
-        if df_filtered.empty:
-            return
-
-        rows = len(selected_par)
-        fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03)
-
-        colors = px.colors.qualitative.Set1
-        ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
-        trace_map = {}
-        legend_channels_seen = set()
-        axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
-
-        for i, par in enumerate(selected_par, start=1):
-            df_par = df_filtered[df_filtered["par"] == par]
-
-            for ch in selected_ch:
-                df_ch = df_par[df_par["ch"] == ch]
-                if df_ch.empty:
-                    continue
-                df_ch = self._filter_group_for_plot(df_ch)
-                if df_ch.empty:
-                    continue
-
-                show_channel_legend = ch not in legend_channels_seen
-                fig.add_trace(
-                    go.Scatter(
-                        x=df_ch["timestamp"],
-                        y=df_ch["val"],
-                        mode="lines+markers",
-                        name=self._channel_display_name(ch),
-                        legendgroup=f"ch {ch}",
-                        marker=dict(color=ch_to_color.get(ch)),
-                        showlegend=show_channel_legend,
-                    ),
-                    row=i,
-                    col=1,
-                )
-                legend_channels_seen.add(ch)
-                trace_map[(par, ch)] = len(fig.data) - 1
-
-            fig.update_yaxes(title_text=par, type=axis_type, row=i, col=1)
-
-        fig.update_layout(
-            height=300 * rows,
-            hovermode="x unified",
-            title_text=self.loaded_filename,
-            margin=dict(r=220),
-            legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
-        )
-
-        viewer = QWebEngineView()
-        plot_ready_script = """
-window.plotlyLiveViewId = "{plot_id}";
-window.plotlyPendingUpdates = 0;
-window.plotlyRenderReady = false;
-(function() {
-    const el = document.getElementById("{plot_id}");
-    if (!el) return;
-    const markReady = function() {
-        window.requestAnimationFrame(function() {
+            if self.df.empty:
+                self.current_selection = ([], [])
+                return
+    
+            selected_ch = self._selected_channels()
+            selected_par = self._selected_parameters()
+            self.current_selection = (selected_ch, selected_par)
+            if not selected_ch or not selected_par:
+                return
+    
+            df_filtered = self.df[
+                self.df["ch"].isin(selected_ch) & self.df["par"].isin(selected_par)
+            ].sort_values("timestamp")
+            if df_filtered.empty:
+                return
+    
+            rows = len(selected_par)
+            fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03)
+    
+            colors = px.colors.qualitative.Set1
+            ch_to_color = {ch: colors[i % len(colors)] for i, ch in enumerate(selected_ch)}
+            trace_map = {}
+            legend_channels_seen = set()
+            axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
+    
+            for i, par in enumerate(selected_par, start=1):
+                df_par = df_filtered[df_filtered["par"] == par]
+    
+                for ch in selected_ch:
+                    df_ch = df_par[df_par["ch"] == ch]
+                    if df_ch.empty:
+                        continue
+                    df_ch = self._filter_group_for_plot(df_ch)
+                    if df_ch.empty:
+                        continue
+    
+                    show_channel_legend = ch not in legend_channels_seen
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df_ch["timestamp"],
+                            y=df_ch["val"],
+                            mode="lines+markers",
+                            name=self._channel_display_name(ch),
+                            legendgroup=f"ch {ch}",
+                            marker=dict(color=ch_to_color.get(ch)),
+                            showlegend=show_channel_legend,
+                        ),
+                        row=i,
+                        col=1,
+                    )
+                    legend_channels_seen.add(ch)
+                    trace_map[(par, ch)] = len(fig.data) - 1
+    
+                fig.update_yaxes(title_text=par, type=axis_type, row=i, col=1)
+    
+            fig.update_layout(
+                height=300 * rows,
+                hovermode="x unified",
+                title_text=self.loaded_filename,
+                margin=dict(r=220),
+                legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
+            )
+    
+            viewer = QWebEngineView()
+            plot_ready_script = """
+    window.plotlyLiveViewId = "{plot_id}";
+    window.plotlyPendingUpdates = 0;
+    window.plotlyRenderReady = false;
+    (function() {
+        const el = document.getElementById("{plot_id}");
+        if (!el) return;
+        const markReady = function() {
             window.requestAnimationFrame(function() {
-                window.plotlyRenderReady = true;
+                window.requestAnimationFrame(function() {
+                    window.plotlyRenderReady = true;
+                });
             });
-        });
-    };
-    if (el.on) {
-        el.on("plotly_afterplot", function() {
-            markReady();
-        });
-    }
-    markReady();
-})();
-"""
-        html_content = fig.to_html(
-            full_html=True,
-            include_plotlyjs="cdn",
-            div_id="plotly-live-view",
-            post_script=plot_ready_script,
-        )
-        js_mapping = json.dumps({f"{par}|{ch}": idx for (par, ch), idx in trace_map.items()})
-        html_content += f"""
-<script>
-window.traceNameToIndex = {js_mapping};
-</script>
-"""
-        self.viewer_ready = False
-        self.pending_new_data.clear()
-        viewer.setHtml(html_content)
-        viewer.setMinimumHeight(400)
-        viewer.loadFinished.connect(self.on_viewer_load_finished)
-        self.plot_layout.addWidget(viewer)
-
-        self.viewer = viewer
-        self.current_fig = fig
-        self.trace_map = trace_map
-        self.export_canvas_button.setEnabled(True)
+        };
+        if (el.on) {
+            el.on("plotly_afterplot", function() {
+                markReady();
+            });
+        }
+        markReady();
+    })();
+    """
+            html_content = fig.to_html(
+                full_html=True,
+                include_plotlyjs="cdn",
+                div_id="plotly-live-view",
+                post_script=plot_ready_script,
+            )
+            js_mapping = json.dumps({f"{par}|{ch}": idx for (par, ch), idx in trace_map.items()})
+            html_content += f"""
+    <script>
+    window.traceNameToIndex = {js_mapping};
+    </script>
+    """
+            self.viewer_ready = False
+            self.pending_new_data.clear()
+            viewer.setHtml(html_content)
+            viewer.setMinimumHeight(400)
+            viewer.loadFinished.connect(self.on_viewer_load_finished)
+            self.plot_layout.addWidget(viewer)
+    
+            self.viewer = viewer
+            self.current_fig = fig
+            self.trace_map = trace_map
+            self.export_canvas_button.setEnabled(True)
+        except Exception:
+            QMessageBox.critical(self, "Plot Error", traceback.format_exc())
 
     def export_canvas_pdf(self):
         if self.current_fig is None:

@@ -1,0 +1,6 @@
+PyQt5>=5.15
+PyQtWebEngine>=5.15
+pandas>=1.5
+plotly>=5.0
+pyinstaller>=5.13
+pyinstaller-hooks-contrib>=2024.0
