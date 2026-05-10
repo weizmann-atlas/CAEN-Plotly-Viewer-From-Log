@@ -52,17 +52,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# ── Windows: onedir build ─────────────────────────────────────────────────────
-# Qt WebEngine requires DLLs and resource files to be co-located with
-# QtWebEngineProcess.exe. A onedir layout guarantees this without any PATH
-# tricks; a onefile bundle can't reliably satisfy that requirement on Windows.
-# Distribute the entire dist\CAEN_Log_Viewer\ folder (e.g. as a zip).
+# ── Windows: onefile build ───────────────────────────────────────────────────
+# All DLLs, PAK files and QtWebEngineProcess.exe are bundled into the single
+# exe. PyInstaller's bootloader extracts them to %TEMP%\MEIxxxxxx on first
+# run. The runtime hook (hooks/rthook_webengine.py) then:
+#   • sets QTWEBENGINEPROCESS_PATH so Qt can find the helper binary
+#   • prepends _MEIPASS to PATH so the helper can resolve Qt DLLs
+#   • intercepts --type=<role> re-launches and os.execv's directly into
+#     QtWebEngineProcess.exe so the renderer/GPU subprocesses work correctly
 if sys.platform == "win32":
     exe = EXE(
         pyz,
         a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
         [],
-        exclude_binaries=True,
         name="CAEN_Log_Viewer",
         debug=False,
         bootloader_ignore_signals=False,
@@ -76,15 +81,6 @@ if sys.platform == "win32":
         codesign_identity=None,
         entitlements_file=None,
         icon=None,
-    )
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        strip=False,
-        upx=False,
-        name="CAEN_Log_Viewer",
     )
 
 # ── macOS: onefile wrapped in .app bundle ────────────────────────────────────
