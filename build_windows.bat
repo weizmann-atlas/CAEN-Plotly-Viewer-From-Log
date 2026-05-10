@@ -12,7 +12,11 @@ if errorlevel 1 goto :error
 
 echo.
 echo Build complete.
-echo Output: dist\CAEN_Log_Viewer.exe
+echo Output folder: dist\CAEN_Log_Viewer\
+echo Launch:        dist\CAEN_Log_Viewer\CAEN_Log_Viewer.exe
+echo.
+echo IMPORTANT: distribute the entire dist\CAEN_Log_Viewer\ folder
+echo (e.g. zip it). The exe requires the DLLs and resources next to it.
 echo.
 echo NOTE: Windows Defender / SmartScreen may warn on first run.
 echo This is a known false-positive for PyInstaller executables.

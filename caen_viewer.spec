@@ -52,31 +52,65 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name="CAEN_Log_Viewer",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    # UPX disabled — it corrupts Qt DLLs and causes crashes
-    upx=False,
-    runtime_tmpdir=None,
-    console=False,  # no terminal window
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=None,
-)
+# ── Windows: onedir build ─────────────────────────────────────────────────────
+# Qt WebEngine requires DLLs and resource files to be co-located with
+# QtWebEngineProcess.exe. A onedir layout guarantees this without any PATH
+# tricks; a onefile bundle can't reliably satisfy that requirement on Windows.
+# Distribute the entire dist\CAEN_Log_Viewer\ folder (e.g. as a zip).
+if sys.platform == "win32":
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="CAEN_Log_Viewer",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        # UPX disabled — it corrupts Qt DLLs and causes crashes
+        upx=False,
+        console=False,  # no terminal window
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=None,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="CAEN_Log_Viewer",
+    )
 
-# macOS: wrap the exe in a .app bundle so Finder shows it as a native app
-if sys.platform == "darwin":
+# ── macOS: onefile wrapped in .app bundle ────────────────────────────────────
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name="CAEN_Log_Viewer",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        # UPX disabled — it corrupts Qt DLLs and causes crashes
+        upx=False,
+        runtime_tmpdir=None,
+        console=False,  # no terminal window
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=None,
+    )
     app = BUNDLE(
         exe,
         name="CAEN Log Viewer.app",
