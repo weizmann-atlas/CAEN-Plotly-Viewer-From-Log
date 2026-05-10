@@ -578,6 +578,12 @@ class PlotlyLiveViewer(QWidget):
                             legendgroup=f"ch {ch}",
                             marker=dict(color=ch_to_color.get(ch)),
                             showlegend=show_channel_legend,
+                            # Snap hover only to actual data markers, not to
+                            # positions along line segments between them.
+                            # Without this, Plotly labels hovered line segments
+                            # with the segment's right-endpoint value, making
+                            # the tooltip appear to show the "next" data point.
+                            hoveron="points",
                         ),
                         row=i,
                         col=1,
