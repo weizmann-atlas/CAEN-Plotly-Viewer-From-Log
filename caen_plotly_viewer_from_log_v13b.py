@@ -3,9 +3,11 @@ import os
 import re
 import json
 import base64
-import tempfile
 import traceback
 import urllib.parse
+import threading
+import http.server
+import socket
 from datetime import datetime
 
 import pandas as pd
@@ -42,6 +44,37 @@ LOG_PATTERN = re.compile(
     r"\[(?P<timestamp>[^\]]+)\]: \[[^\]]+\] bd \[(?P<bd>\d+)\] ch \[(?P<ch>\d+)\] "
     r"par \[(?P<par>[^\]]+)\] val \[(?P<val>[\d\.eE+-]+)\];"
 )
+
+
+_plot_html_lock = threading.Lock()
+_plot_html_bytes: bytes = b""
+
+
+class _PlotHTTPHandler(http.server.BaseHTTPRequestHandler):
+    """Minimal HTTP handler — serves the latest Plotly HTML to Qt WebEngine.
+
+    Using http://127.0.0.1 instead of file:// URLs avoids Chromium's
+    cross-origin security policy that silently blocks local-file rendering
+    in packaged apps on Windows.
+    """
+
+    def do_GET(self):
+        with _plot_html_lock:
+            body = _plot_html_bytes
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):  # silence per-request logging
+        pass
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _parse_text(text):
@@ -214,6 +247,14 @@ class PlotlyLiveViewer(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_from_file)
+
+        # Start a local HTTP server so Qt WebEngine can load plots over
+        # http://127.0.0.1 instead of file:// URLs.  The loopback address
+        # bypasses Chromium's cross-origin file policy that causes blank
+        # canvases on Windows in packaged builds.
+        self._plot_port = _find_free_port()
+        _srv = http.server.HTTPServer(("127.0.0.1", self._plot_port), _PlotHTTPHandler)
+        threading.Thread(target=_srv.serve_forever, daemon=True).start()
 
         self._set_loaded_state(False)
         self._update_channel_titles_height()
@@ -588,14 +629,15 @@ class PlotlyLiveViewer(QWidget):
     window.traceNameToIndex = {js_mapping};
     </script>
     """
-            # setHtml() has a 2 MB limit in Qt WebEngine; writing to a temp
-            # file and loading via file URL bypasses this restriction entirely.
-            tmp_path = os.path.join(tempfile.gettempdir(), "caen_plot.html")
-            with open(tmp_path, "w", encoding="utf-8") as _f:
-                _f.write(html_content)
+            # Serve the HTML over loopback HTTP so Qt WebEngine receives it
+            # as a normal http:// response.  file:// URLs trigger Chromium's
+            # cross-origin security policy and render a blank page on Windows.
+            global _plot_html_bytes
+            with _plot_html_lock:
+                _plot_html_bytes = html_content.encode("utf-8")
             self.viewer_ready = False
             self.pending_new_data.clear()
-            viewer.load(QUrl.fromLocalFile(tmp_path))
+            viewer.load(QUrl(f"http://127.0.0.1:{self._plot_port}/plot.html"))
             viewer.setMinimumHeight(400)
             viewer.loadFinished.connect(self.on_viewer_load_finished)
             self.plot_layout.addWidget(viewer)
