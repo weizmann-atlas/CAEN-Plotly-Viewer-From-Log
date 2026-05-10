@@ -17,11 +17,6 @@ if getattr(sys, "frozen", False):
     # Packaged apps can't use the Chromium sandbox without proper entitlements
     os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
-    # Force software rendering — the GPU pipeline frequently fails in onefile
-    # bundles on Windows where the GL environment isn't fully accessible from
-    # the extracted temp directory, leaving a blank white page.
-    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
-
     # Qt WebEngine spawns helper subprocesses (renderer, GPU, etc.) by re-launching
     # the same executable with --type=<role>. Detect this and exec the real
     # QtWebEngineProcess binary so the helper runs correctly instead of booting

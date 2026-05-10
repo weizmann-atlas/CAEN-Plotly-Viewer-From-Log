@@ -663,6 +663,11 @@ class PlotlyLiveViewer(QWidget):
             html_content += f"""
     <script>
     window.traceNameToIndex = {js_mapping};
+    // Capture JS errors so the debug log can report them
+    window._jsErrors = [];
+    window.onerror = function(msg, src, line) {{
+        window._jsErrors.push(msg + ' @ ' + src + ':' + line);
+    }};
     </script>
     """
             # Serve the HTML over loopback HTTP so Qt WebEngine receives it
@@ -739,6 +744,8 @@ class PlotlyLiveViewer(QWidget):
         self._pdf_poll_timer.start()
 
     def _plot_ready_js(self):
+        # Check el._fullData instead of the rAF-dependent plotlyRenderReady flag.
+        # requestAnimationFrame is unreliable with --disable-gpu in Qt WebEngine.
         return """
         (function() {
             const el = window.plotlyLiveViewId
@@ -747,7 +754,7 @@ class PlotlyLiveViewer(QWidget):
             return Boolean(
                 window.Plotly &&
                 el &&
-                window.plotlyRenderReady &&
+                el._fullData &&
                 (window.plotlyPendingUpdates || 0) === 0
             );
         })();
@@ -821,6 +828,25 @@ class PlotlyLiveViewer(QWidget):
         self._log(f"loadFinished: ok={ok}")
         self.viewer_ready = False
         if ok and self.viewer:
+            # Diagnostic: inspect what actually loaded so we can see whether
+            # the HTTP server's HTML was received and Plotly initialised.
+            self.viewer.page().runJavaScript(
+                """
+                (function() {
+                    var div = document.getElementById('plotly-live-view');
+                    var errs = window._jsErrors ? window._jsErrors.join(' | ') : 'none';
+                    return JSON.stringify({
+                        plotly: typeof window.Plotly,
+                        divExists: !!div,
+                        divLen: div ? div.innerHTML.length : -1,
+                        bodyLen: document.body ? document.body.innerHTML.length : -1,
+                        title: document.title || '',
+                        jsErrors: errs
+                    });
+                })()
+                """,
+                lambda r: self._log(f"DOM: {r}"),
+            )
             self._poll_viewer_ready(self.viewer, 0)
         elif not ok:
             self._log("loadFinished: page load FAILED — canvas will be blank")
