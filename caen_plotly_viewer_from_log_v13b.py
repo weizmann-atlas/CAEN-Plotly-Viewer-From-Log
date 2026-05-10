@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QCheckBox,
     QSlider,
+    QTextEdit,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer, Qt, QSize, QUrl, QMarginsF
@@ -50,6 +51,9 @@ _plot_html_lock = threading.Lock()
 _plot_html_bytes: bytes = b""
 
 
+_plot_log_callback = None  # set to PlotlyLiveViewer._log once the widget exists
+
+
 class _PlotHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Minimal HTTP handler — serves the latest Plotly HTML to Qt WebEngine.
 
@@ -61,6 +65,10 @@ class _PlotHTTPHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         with _plot_html_lock:
             body = _plot_html_bytes
+        if _plot_log_callback:
+            _plot_log_callback(
+                f"[HTTP] GET {self.path} — serving {len(body)} bytes from {self.client_address[0]}"
+            )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -243,6 +251,19 @@ class PlotlyLiveViewer(QWidget):
         self.plot_layout = QVBoxLayout(self.plot_container)
         self.scroll.setWidget(self.plot_container)
         layout.addWidget(self.scroll)
+
+        # Debug log box — remove once the Windows canvas issue is resolved
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(120)
+        self.log_box.setFont(self.log_box.font())  # pick up system monospace below
+        from PyQt5.QtGui import QFont
+        _mono = QFont("Courier New" if sys.platform == "win32" else "Courier")
+        _mono.setPointSize(8)
+        self.log_box.setFont(_mono)
+        self.log_box.setPlaceholderText("Debug log…")
+        layout.addWidget(self.log_box)
+
         self.setLayout(layout)
 
         self.timer = QTimer(self)
@@ -255,9 +276,20 @@ class PlotlyLiveViewer(QWidget):
         self._plot_port = _find_free_port()
         _srv = http.server.HTTPServer(("127.0.0.1", self._plot_port), _PlotHTTPHandler)
         threading.Thread(target=_srv.serve_forever, daemon=True).start()
+        global _plot_log_callback
+        _plot_log_callback = self._log
+        self._log(f"HTTP plot server started on port {self._plot_port}")
 
         self._set_loaded_state(False)
         self._update_channel_titles_height()
+
+    def _log(self, msg: str) -> None:
+        """Append a timestamped line to the debug log box.
+        Safe to call from any thread — posts to the Qt event loop."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        # If called from a background thread, schedule on the main thread
+        QTimer.singleShot(0, lambda: self.log_box.append(line))
 
     def open_file_dialog(self):
         start_dir = os.path.dirname(self.loaded_path) if self.loaded_path else ""
@@ -307,6 +339,7 @@ class PlotlyLiveViewer(QWidget):
         self._rebuild_data_controls()
         self._set_loaded_state(True)
         self._update_window_title()
+        self._log(f"Loaded {len(self.df)} rows from {self.loaded_filename}")
 
     def _slider_to_dt(self, value):
         return self._t_min + pd.Timedelta(seconds=value)
@@ -524,14 +557,17 @@ class PlotlyLiveViewer(QWidget):
             self._clear_plot()
 
             if self.df.empty:
+                self._log("generate_plots: df is empty, aborting")
                 self.current_selection = ([], [])
                 return
-    
+
             selected_ch = self._selected_channels()
             selected_par = self._selected_parameters()
             self.current_selection = (selected_ch, selected_par)
             if not selected_ch or not selected_par:
+                self._log("generate_plots: no channels or params selected, aborting")
                 return
+            self._log(f"generate_plots: ch={selected_ch} par={selected_par}")
     
             axis_type = "log" if self.log_scale_checkbox.isChecked() else "linear"
 
@@ -635,9 +671,12 @@ class PlotlyLiveViewer(QWidget):
             global _plot_html_bytes
             with _plot_html_lock:
                 _plot_html_bytes = html_content.encode("utf-8")
+            html_kb = len(_plot_html_bytes) // 1024
+            url = f"http://127.0.0.1:{self._plot_port}/plot.html"
+            self._log(f"generate_plots: HTML={html_kb} KB, loading {url}")
             self.viewer_ready = False
             self.pending_new_data.clear()
-            viewer.load(QUrl(f"http://127.0.0.1:{self._plot_port}/plot.html"))
+            viewer.load(QUrl(url))
             viewer.setMinimumHeight(400)
             viewer.loadFinished.connect(self.on_viewer_load_finished)
             self.plot_layout.addWidget(viewer)
@@ -646,8 +685,11 @@ class PlotlyLiveViewer(QWidget):
             self.current_fig = fig
             self.trace_map = trace_map
             self.export_canvas_button.setEnabled(True)
+            self._log("generate_plots: viewer created and loading")
         except Exception:
-            QMessageBox.critical(self, "Plot Error", traceback.format_exc())
+            err = traceback.format_exc()
+            self._log(f"generate_plots EXCEPTION:\n{err}")
+            QMessageBox.critical(self, "Plot Error", err)
 
     def export_canvas_pdf(self):
         if self.current_fig is None:
@@ -776,9 +818,12 @@ class PlotlyLiveViewer(QWidget):
                 pass
 
     def on_viewer_load_finished(self, ok):
+        self._log(f"loadFinished: ok={ok}")
         self.viewer_ready = False
         if ok and self.viewer:
             self._poll_viewer_ready(self.viewer, 0)
+        elif not ok:
+            self._log("loadFinished: page load FAILED — canvas will be blank")
 
     def _poll_viewer_ready(self, viewer, attempt):
         if not viewer or viewer is not self.viewer:
@@ -796,6 +841,7 @@ class PlotlyLiveViewer(QWidget):
         if viewer is not self.viewer:
             return
         if ready:
+            self._log(f"Plotly ready after {attempt} poll(s)")
             self.viewer_ready = True
             if self.pending_new_data:
                 combined = pd.concat(self.pending_new_data, ignore_index=True)
@@ -803,7 +849,7 @@ class PlotlyLiveViewer(QWidget):
                 self._extend_plot_with_df(combined)
             return
         if attempt >= 100:
-            print(">> Plot render readiness timeout.")
+            self._log("WARNING: Plotly readiness timeout (100 polls)")
             return
         QTimer.singleShot(
             100,
