@@ -12,10 +12,12 @@ if errorlevel 1 goto :error
 
 echo.
 echo Build complete.
-echo Output: dist\CAEN_Log_Viewer.exe
+echo Output folder: dist\CAEN_Log_Viewer\
+echo Launch:        dist\CAEN_Log_Viewer\CAEN_Log_Viewer.exe
 echo.
-echo The executable is self-contained — just distribute the single .exe file.
-echo On first launch Windows extracts resources to a temp folder; this is normal.
+echo IMPORTANT: distribute the entire dist\CAEN_Log_Viewer\ folder (e.g. zipped).
+echo The exe requires QtWebEngineProcess.exe and resource files next to it —
+echo these cannot be packed into a single file due to Qt WebEngine constraints.
 echo.
 echo NOTE: Windows Defender / SmartScreen may warn on first run.
 echo This is a known false-positive for PyInstaller executables.
