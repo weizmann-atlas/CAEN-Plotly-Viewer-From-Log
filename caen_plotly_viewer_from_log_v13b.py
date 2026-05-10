@@ -663,13 +663,28 @@ class PlotlyLiveViewer(QWidget):
             html_content += f"""
     <script>
     window.traceNameToIndex = {js_mapping};
-    // Capture JS errors so the debug log can report them
-    window._jsErrors = [];
-    window.onerror = function(msg, src, line) {{
-        window._jsErrors.push(msg + ' @ ' + src + ':' + line);
-    }};
     </script>
     """
+            # Plotly.js is packaged as a UMD bundle.  If Qt WebEngine (or any
+            # injected Qt script) has already defined the global `define` or
+            # `require` symbols, the UMD wrapper silently routes the module
+            # through AMD / CommonJS instead of the browser-global path, so
+            # `window.Plotly` is never set and the canvas stays blank.
+            # Injecting this preamble into <head> — before Plotly's <script> —
+            # neutralises AMD detection and catches any early JS errors.
+            preamble = """<script>
+(function () {
+    // Neutralise AMD/CommonJS so Plotly always assigns window.Plotly
+    try { window.define  = undefined; } catch (_) {}
+    try { window.require = undefined; } catch (_) {}
+    // Capture JS errors that occur before later onerror handlers are set
+    window._jsErrors = [];
+    window.onerror = function (msg, src, line) {
+        window._jsErrors.push(msg + ' @ ' + src + ':' + line);
+    };
+})();
+</script>"""
+            html_content = html_content.replace("<head>", "<head>" + preamble, 1)
             # Serve the HTML over loopback HTTP so Qt WebEngine receives it
             # as a normal http:// response.  file:// URLs trigger Chromium's
             # cross-origin security policy and render a blank page on Windows.
@@ -836,7 +851,9 @@ class PlotlyLiveViewer(QWidget):
                     var div = document.getElementById('plotly-live-view');
                     var errs = window._jsErrors ? window._jsErrors.join(' | ') : 'none';
                     return JSON.stringify({
-                        plotly: typeof window.Plotly,
+                        plotly:  typeof window.Plotly,
+                        define:  typeof window.define,
+                        require: typeof window.require,
                         divExists: !!div,
                         divLen: div ? div.innerHTML.length : -1,
                         bodyLen: document.body ? document.body.innerHTML.length : -1,
