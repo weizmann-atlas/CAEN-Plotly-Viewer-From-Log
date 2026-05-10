@@ -5,6 +5,7 @@ import json
 import base64
 import tempfile
 import traceback
+import urllib.parse
 from datetime import datetime
 
 import pandas as pd
@@ -142,7 +143,6 @@ class PlotlyLiveViewer(QWidget):
 
         self.par_select = QListWidget()
         self.par_select.setSelectionMode(QAbstractItemView.MultiSelection)
-        self.par_select.setMaximumHeight(60)
         self.par_select.setMinimumWidth(150)
 
         self.plot_button = QPushButton("Plot Selection")
@@ -350,6 +350,14 @@ class PlotlyLiveViewer(QWidget):
         for par in parameters:
             self.par_select.addItem(QListWidgetItem(par))
 
+        # Size par_select to show up to 3 rows using the actual row height so
+        # it looks correct regardless of platform DPI / font scaling.
+        _par_row_h = self.par_select.sizeHintForRow(0) if self.par_select.count() else 22
+        _par_visible = min(max(len(parameters), 1), 3)
+        self.par_select.setFixedHeight(
+            _par_visible * _par_row_h + self.par_select.frameWidth() * 2
+        )
+
         self._update_channel_titles_height()
 
     def _clear_layout(self, layout):
@@ -364,7 +372,7 @@ class PlotlyLiveViewer(QWidget):
 
     def _update_channel_titles_height(self):
         row_count = len(self.channel_title_inputs)
-        visible_rows = min(max(row_count, 1), 2)
+        visible_rows = min(max(row_count, 1), 3)
         first_input = next(iter(self.channel_title_inputs.values()), None)
         row_height = first_input.sizeHint().height() if first_input is not None else 28
         spacing = self.channel_titles_layout.spacing()
@@ -669,41 +677,61 @@ class PlotlyLiveViewer(QWidget):
         self.viewer.page().runJavaScript("window._caenPdfSvg", self._handle_svg_result)
 
     def _handle_svg_result(self, result):
-        if result is None:
-            return  # Plotly.toImage not finished yet
-        self._pdf_poll_timer.stop()
-        self._pdf_poll_timer = None
+        try:
+            if result is None:
+                return  # Plotly.toImage not finished yet — keep polling
 
-        if not isinstance(result, str) or result.startswith("ERROR"):
+            if self._pdf_poll_timer is not None:
+                self._pdf_poll_timer.stop()
+                self._pdf_poll_timer = None
+
+            if not isinstance(result, str) or result.startswith("ERROR"):
+                self._reset_export_button()
+                msg = str(result)
+                QTimer.singleShot(0, lambda: QMessageBox.warning(
+                    self, "Export Failed", f"Could not render SVG:\n{msg}"
+                ))
+                return
+
+            base64_prefix = "data:image/svg+xml;base64,"
+            urlenc_prefix = "data:image/svg+xml,"
+
+            if result.startswith(base64_prefix):
+                svg_bytes = base64.b64decode(result[len(base64_prefix):])
+            elif result.startswith(urlenc_prefix):
+                svg_bytes = urllib.parse.unquote(result[len(urlenc_prefix):]).encode("utf-8")
+            else:
+                self._reset_export_button()
+                preview = result[:80]
+                QTimer.singleShot(0, lambda: QMessageBox.warning(
+                    self, "Export Failed", f"Unexpected SVG data format:\n{preview}"
+                ))
+                return
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFileName(self._pending_pdf_path)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setPageLayout(QPageLayout(
+                QPageSize(QPageSize.A4),
+                QPageLayout.Landscape,
+                QMarginsF(10, 10, 10, 10),
+                QPageLayout.Millimeter,
+            ))
+            renderer = QSvgRenderer(svg_bytes)
+            painter = QPainter(printer)
+            renderer.render(painter)
+            painter.end()
+
+            saved_path = self._pending_pdf_path
             self._reset_export_button()
-            QMessageBox.warning(self, "Export Failed", f"Could not render SVG:\n{result}")
-            return
-
-        prefix = "data:image/svg+xml;base64,"
-        if not result.startswith(prefix):
-            self._reset_export_button()
-            QMessageBox.warning(self, "Export Failed", "Unexpected SVG data format.")
-            return
-
-        svg_bytes = base64.b64decode(result[len(prefix):])
-
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setOutputFileName(self._pending_pdf_path)
-        printer.setOutputFormat(QPrinter.PdfFormat)
-        printer.setPageLayout(QPageLayout(
-            QPageSize(QPageSize.A4),
-            QPageLayout.Landscape,
-            QMarginsF(10, 10, 10, 10),
-            QPageLayout.Millimeter,
-        ))
-
-        renderer = QSvgRenderer(svg_bytes)
-        painter = QPainter(printer)
-        renderer.render(painter)
-        painter.end()
-
-        self._reset_export_button()
-        QMessageBox.information(self, "Export Complete", f"Saved PDF to:\n{self._pending_pdf_path}")
+            QTimer.singleShot(0, lambda: QMessageBox.information(
+                self, "Export Complete", f"Saved PDF to:\n{saved_path}"
+            ))
+        except Exception:
+            try:
+                self._reset_export_button()
+            except Exception:
+                pass
 
     def on_viewer_load_finished(self, ok):
         self.viewer_ready = False
@@ -816,6 +844,9 @@ class PlotlyLiveViewer(QWidget):
 
 
 if __name__ == "__main__":
+    # Required on Windows (and harmless on other platforms): lets Qt WebEngine
+    # share one OpenGL context across all web views in the process.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     viewer = PlotlyLiveViewer()
     viewer.show()

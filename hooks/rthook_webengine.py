@@ -23,5 +23,11 @@ if getattr(sys, "frozen", False):
     # the full Python+PyQt5 app, which crashes (SIGABRT in PyQtSlotProxy::unislot).
     if any(arg.startswith("--type=") for arg in sys.argv[1:]):
         if _webengine_path and os.path.isfile(_webengine_path):
+            if _is_win:
+                # On Windows, QtWebEngineProcess.exe resolves DLLs from its own
+                # directory and the system PATH. The Qt/PyQt5 DLLs live in
+                # _MEIPASS (the PyInstaller extraction root), so prepend it so
+                # the process can find them after os.execv replaces this image.
+                os.environ["PATH"] = _meipass + os.pathsep + os.environ.get("PATH", "")
             os.execv(_webengine_path, [_webengine_path] + sys.argv[1:])
         sys.exit(0)
