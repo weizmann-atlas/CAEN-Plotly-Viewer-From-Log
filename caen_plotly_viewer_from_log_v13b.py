@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QCheckBox,
     QSlider,
+    QTextEdit,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QTimer, Qt, QSize, QUrl, QMarginsF
@@ -244,6 +245,16 @@ class PlotlyLiveViewer(QWidget):
         self.scroll.setWidget(self.plot_container)
         layout.addWidget(self.scroll)
 
+        # ── Debug log box ────────────────────────────────────────────────────
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(120)
+        from PyQt5.QtGui import QFont
+        _mono = QFont("Courier New" if sys.platform == "win32" else "Courier")
+        _mono.setPointSize(8)
+        self.log_box.setFont(_mono)
+        layout.addWidget(self.log_box)
+
         self.setLayout(layout)
 
         self.timer = QTimer(self)
@@ -256,9 +267,15 @@ class PlotlyLiveViewer(QWidget):
         self._plot_port = _find_free_port()
         _srv = http.server.HTTPServer(("127.0.0.1", self._plot_port), _PlotHTTPHandler)
         threading.Thread(target=_srv.serve_forever, daemon=True).start()
+        self._log(f"HTTP server on port {self._plot_port}")
 
         self._set_loaded_state(False)
         self._update_channel_titles_height()
+
+    def _log(self, msg: str) -> None:
+        """Append a timestamped line to the debug log box (thread-safe)."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        QTimer.singleShot(0, lambda: self.log_box.append(f"[{ts}] {msg}"))
 
     def open_file_dialog(self):
         start_dir = os.path.dirname(self.loaded_path) if self.loaded_path else ""
@@ -493,27 +510,32 @@ class PlotlyLiveViewer(QWidget):
         if not self.loaded_path:
             return
 
+        self._log("tick")
         try:
             with open(self.loaded_path, "r", encoding="utf-8", errors="ignore") as handle:
                 handle.seek(self.last_position)
                 new_lines = handle.readlines()
                 self.last_position = handle.tell()
             if not new_lines:
+                self._log("tick: no new lines")
                 return
 
             new_df = parse_caen_lines(new_lines)
             if new_df.empty:
+                self._log(f"tick: {len(new_lines)} lines but 0 parsed rows")
                 return
 
+            self._log(f"tick: {len(new_df)} new rows")
             new_df = new_df.sort_values("timestamp").reset_index(drop=True)
             self.df = pd.concat([self.df, new_df], ignore_index=True)
             self.extend_plot(new_df)
-        except Exception as exc:
+        except Exception:
+            err = traceback.format_exc()
+            self._log(f"tick EXCEPTION:\n{err}")
             self._stop_live_mode()
-            msg = str(exc)
             QTimer.singleShot(0, lambda: QMessageBox.warning(
                 self, "Live Update Error",
-                f"Live update stopped due to an error:\n{msg}",
+                f"Live update stopped due to an error:\n{err}",
             ))
 
     def on_plot_option_changed(self):
@@ -816,6 +838,7 @@ class PlotlyLiveViewer(QWidget):
                 pass
 
     def on_viewer_load_finished(self, ok):
+        self._log(f"loadFinished ok={ok}")
         self.viewer_ready = False
         if ok and self.viewer:
             self._poll_viewer_ready(self.viewer, 0)
@@ -836,6 +859,7 @@ class PlotlyLiveViewer(QWidget):
         if viewer is not self.viewer:
             return
         if ready:
+            self._log(f"viewer_ready=True after {attempt} poll(s)")
             self.viewer_ready = True
             if self.pending_new_data:
                 combined = pd.concat(self.pending_new_data, ignore_index=True)
@@ -846,6 +870,7 @@ class PlotlyLiveViewer(QWidget):
             # Readiness check timed out (15 s). Mark ready anyway so that
             # live updates are not permanently blocked; the chart may simply
             # not expose _fullData in this Plotly version.
+            self._log("viewer_ready timeout (150 polls) — forcing True")
             self.viewer_ready = True
             if self.pending_new_data:
                 combined = pd.concat(self.pending_new_data, ignore_index=True)
@@ -864,10 +889,13 @@ class PlotlyLiveViewer(QWidget):
         if new_df.empty:
             return
         if not self.viewer or not self.trace_map:
+            self._log(f"extend_plot: skipped (viewer={bool(self.viewer)} trace_map={bool(self.trace_map)})")
             return
         if not self.viewer_ready:
             self.pending_new_data.append(new_df)
+            self._log(f"extend_plot: viewer_ready=False, queuing ({len(self.pending_new_data)} pending)")
             return
+        self._log("extend_plot: calling _extend_plot_with_df")
         self._extend_plot_with_df(new_df)
 
     def _extend_plot_with_df(self, new_df):
@@ -889,9 +917,11 @@ class PlotlyLiveViewer(QWidget):
 
             trace_idx = self.trace_map.get((par, ch))
             if trace_idx is None:
+                self._log(f"extendTraces: no trace for ({par},{ch}) — regenerating")
                 self.generate_plots()
                 return
 
+            self._log(f"extendTraces idx={trace_idx} ({par}|ch{ch}) x={len(group)} pts")
             figure_timestamps = group["timestamp"].tolist()
             # ISO 8601 with T separator — the format Plotly.js reliably parses
             # on a date axis (space-separated strings can be silently rejected).
