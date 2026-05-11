@@ -509,7 +509,12 @@ class PlotlyLiveViewer(QWidget):
             self.df = pd.concat([self.df, new_df], ignore_index=True)
             self.extend_plot(new_df)
         except Exception as exc:
-            print(f">> Live update error: {exc}")
+            self._stop_live_mode()
+            msg = str(exc)
+            QTimer.singleShot(0, lambda: QMessageBox.warning(
+                self, "Live Update Error",
+                f"Live update stopped due to an error:\n{msg}",
+            ))
 
     def on_plot_option_changed(self):
         if self._selected_channels() and self._selected_parameters():
@@ -731,13 +736,12 @@ class PlotlyLiveViewer(QWidget):
         self._pdf_poll_timer.start()
 
     def _plot_ready_js(self):
-        # Check el._fullData instead of the rAF-dependent plotlyRenderReady flag.
-        # requestAnimationFrame is unreliable with --disable-gpu in Qt WebEngine.
+        # Hardcode the div ID rather than relying on window.plotlyLiveViewId
+        # (a global set by post_script's {plot_id} substitution which may not
+        # have run yet when the first poll fires).
         return """
         (function() {
-            const el = window.plotlyLiveViewId
-                ? document.getElementById(window.plotlyLiveViewId)
-                : null;
+            var el = document.getElementById("plotly-live-view");
             return Boolean(
                 window.Plotly &&
                 el &&
@@ -838,7 +842,15 @@ class PlotlyLiveViewer(QWidget):
                 self.pending_new_data.clear()
                 self._extend_plot_with_df(combined)
             return
-        if attempt >= 100:
+        if attempt >= 150:
+            # Readiness check timed out (15 s). Mark ready anyway so that
+            # live updates are not permanently blocked; the chart may simply
+            # not expose _fullData in this Plotly version.
+            self.viewer_ready = True
+            if self.pending_new_data:
+                combined = pd.concat(self.pending_new_data, ignore_index=True)
+                self.pending_new_data.clear()
+                self._extend_plot_with_df(combined)
             return
         QTimer.singleShot(
             100,
@@ -881,7 +893,9 @@ class PlotlyLiveViewer(QWidget):
                 return
 
             figure_timestamps = group["timestamp"].tolist()
-            timestamps = group["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S.%f").tolist()
+            # ISO 8601 with T separator — the format Plotly.js reliably parses
+            # on a date axis (space-separated strings can be silently rejected).
+            timestamps = group["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f").tolist()
             values = group["val"].tolist()
             if self.current_fig is not None and trace_idx < len(self.current_fig.data):
                 current_trace = self.current_fig.data[trace_idx]
@@ -896,9 +910,8 @@ class PlotlyLiveViewer(QWidget):
             )
             js_code = f"""
             (function() {{
-                if (!window.Plotly || !window.plotlyLiveViewId) return;
-                const data = {payload};
-                const el = document.getElementById(window.plotlyLiveViewId);
+                if (!window.Plotly) return;
+                const el = document.getElementById("plotly-live-view");
                 if (!el) return;
                 window.plotlyPendingUpdates = (window.plotlyPendingUpdates || 0) + 1;
                 window.plotlyRenderReady = false;
