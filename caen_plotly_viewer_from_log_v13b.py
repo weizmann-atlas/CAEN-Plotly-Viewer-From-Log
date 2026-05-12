@@ -360,10 +360,14 @@ class PlotlyLiveViewer(QWidget):
         self.end_slider.setValue(total_seconds)
         for w in (self.start_slider, self.end_slider):
             w.blockSignals(False)
-        # Update labels without triggering a replot
         fmt = "%Y-%m-%d %H:%M:%S"
         self.start_label.setText(self._t_min.strftime(fmt))
         self.end_label.setText(self._slider_to_dt(total_seconds).strftime(fmt))
+        # Regenerate the plot so data outside the previous custom window becomes
+        # visible again. Guard with current_fig so the call from load_file()
+        # (where _clear_plot() has already set current_fig=None) is a no-op.
+        if self.current_fig is not None:
+            self.on_plot_option_changed()
 
     def _update_window_title(self):
         if self.loaded_filename:
