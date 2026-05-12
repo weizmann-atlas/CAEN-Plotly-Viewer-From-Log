@@ -945,10 +945,17 @@ class PlotlyLiveViewer(QWidget):
                     // Array.from() converts either kind to a plain JS array,
                     // then we replace the whole trace via restyle which has
                     // no such restriction.
+                    const origLen = trace.x ? trace.x.length : 0;
                     const newX = Array.from(trace.x || []).concat(data.x);
                     const newY = Array.from(trace.y || []).concat(data.y);
-                    Plotly.restyle(el, {{x: [newX], y: [newY]}}, [data.trace_index]);
-                    return 'ok';
+                    Plotly.restyle(el, {{x: [newX], y: [newY]}}, [data.trace_index])
+                        .then(function() {{
+                            // After adding new data the x-axis range must be
+                            // refreshed; otherwise new points outside the
+                            // original time window are invisible.
+                            Plotly.relayout(el, {{'xaxis.autorange': true}});
+                        }});
+                    return 'ok:orig=' + origLen + ':total=' + newX.length;
                 }} catch(e) {{
                     return 'error:' + e.toString();
                 }}
@@ -956,9 +963,8 @@ class PlotlyLiveViewer(QWidget):
             """
             self.viewer.page().runJavaScript(
                 js_code,
-                lambda r, _par=par, _ch=ch: (
-                    self._log(f"extendTraces JS ({_par}|ch{_ch}): {r}")
-                    if r != "ok" else None
+                lambda r, _par=par, _ch=ch: self._log(
+                    f"extendTraces JS ({_par}|ch{_ch}): {r}"
                 ),
             )
 
