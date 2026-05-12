@@ -941,21 +941,22 @@ class PlotlyLiveViewer(QWidget):
                 try {{
                     // Plotly.js 2.x stores trace arrays as typed arrays
                     // (Float64Array) after rendering. extendTraces does a
-                    // strict Array.isArray() check and throws on typed arrays.
-                    // Array.from() converts either kind to a plain JS array,
-                    // then we replace the whole trace via restyle which has
-                    // no such restriction.
-                    const origLen = trace.x ? trace.x.length : 0;
-                    const newX = Array.from(trace.x || []).concat(data.x);
-                    const newY = Array.from(trace.y || []).concat(data.y);
-                    Plotly.restyle(el, {{x: [newX], y: [newY]}}, [data.trace_index])
+                    // strict Array.isArray() check and rejects typed arrays.
+                    // Convert x and y in-place to plain JS arrays so that
+                    // extendTraces can call push() on them. Plotly never
+                    // replaces el.data[i].x/y with typed arrays during
+                    // rendering (it uses _fullData for that), so the plain
+                    // array survives until the next generate_plots() call.
+                    if (!Array.isArray(trace.x)) trace.x = Array.from(trace.x || []);
+                    if (!Array.isArray(trace.y)) trace.y = Array.from(trace.y || []);
+                    const origLen = trace.x.length;
+                    Plotly.extendTraces(el, {{x: [data.x], y: [data.y]}}, [data.trace_index])
                         .then(function() {{
-                            // After adding new data the x-axis range must be
-                            // refreshed; otherwise new points outside the
-                            // original time window are invisible.
+                            // New timestamps are typically beyond the original
+                            // axis window; force autorange to make them visible.
                             Plotly.relayout(el, {{'xaxis.autorange': true}});
                         }});
-                    return 'ok:orig=' + origLen + ':total=' + newX.length;
+                    return 'ok:orig=' + origLen + ':total=' + (origLen + data.x.length);
                 }} catch(e) {{
                     return 'error:' + e.toString();
                 }}
