@@ -758,18 +758,10 @@ class PlotlyLiveViewer(QWidget):
         self._pdf_poll_timer.start()
 
     def _plot_ready_js(self):
-        # Hardcode the div ID rather than relying on window.plotlyLiveViewId
-        # (a global set by post_script's {plot_id} substitution which may not
-        # have run yet when the first poll fires).
         return """
         (function() {
             var el = document.getElementById("plotly-live-view");
-            return Boolean(
-                window.Plotly &&
-                el &&
-                el._fullData &&
-                (window.plotlyPendingUpdates || 0) === 0
-            );
+            return Boolean(window.Plotly && el && el._fullData);
         })();
         """
 
@@ -944,19 +936,18 @@ class PlotlyLiveViewer(QWidget):
                 const data = {payload};
                 const el = document.getElementById('plotly-live-view');
                 if (!el) return 'no-element';
+                const trace = el.data && el.data[data.trace_index];
+                if (!trace) return 'no-trace:' + data.trace_index;
                 try {{
-                    window.plotlyPendingUpdates = (window.plotlyPendingUpdates || 0) + 1;
-                    Plotly.extendTraces(el, {{
-                        x: [data.x],
-                        y: [data.y]
-                    }}, [data.trace_index]);
-                    window.requestAnimationFrame(function() {{
-                        window.requestAnimationFrame(function() {{
-                            window.plotlyPendingUpdates = Math.max(
-                                0, (window.plotlyPendingUpdates || 1) - 1
-                            );
-                        }});
-                    }});
+                    // Plotly.js 2.x stores trace arrays as typed arrays
+                    // (Float64Array) after rendering. extendTraces does a
+                    // strict Array.isArray() check and throws on typed arrays.
+                    // Array.from() converts either kind to a plain JS array,
+                    // then we replace the whole trace via restyle which has
+                    // no such restriction.
+                    const newX = Array.from(trace.x || []).concat(data.x);
+                    const newY = Array.from(trace.y || []).concat(data.y);
+                    Plotly.restyle(el, {{x: [newX], y: [newY]}}, [data.trace_index]);
                     return 'ok';
                 }} catch(e) {{
                     return 'error:' + e.toString();
