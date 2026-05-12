@@ -940,27 +940,36 @@ class PlotlyLiveViewer(QWidget):
             )
             js_code = f"""
             (function() {{
-                if (!window.Plotly) return;
-                const el = document.getElementById("plotly-live-view");
-                if (!el) return;
-                window.plotlyPendingUpdates = (window.plotlyPendingUpdates || 0) + 1;
-                window.plotlyRenderReady = false;
-                Plotly.extendTraces(el, {{
-                    x: [data.x],
-                    y: [data.y]
-                }}, [data.trace_index]);
-                window.requestAnimationFrame(function() {{
+                if (!window.Plotly) return 'no-plotly';
+                const data = {payload};
+                const el = document.getElementById('plotly-live-view');
+                if (!el) return 'no-element';
+                try {{
+                    window.plotlyPendingUpdates = (window.plotlyPendingUpdates || 0) + 1;
+                    Plotly.extendTraces(el, {{
+                        x: [data.x],
+                        y: [data.y]
+                    }}, [data.trace_index]);
                     window.requestAnimationFrame(function() {{
-                        window.plotlyPendingUpdates = Math.max(
-                            0,
-                            (window.plotlyPendingUpdates || 1) - 1
-                        );
-                        window.plotlyRenderReady = window.plotlyPendingUpdates === 0;
+                        window.requestAnimationFrame(function() {{
+                            window.plotlyPendingUpdates = Math.max(
+                                0, (window.plotlyPendingUpdates || 1) - 1
+                            );
+                        }});
                     }});
-                }});
+                    return 'ok';
+                }} catch(e) {{
+                    return 'error:' + e.toString();
+                }}
             }})();
             """
-            self.viewer.page().runJavaScript(js_code)
+            self.viewer.page().runJavaScript(
+                js_code,
+                lambda r, _par=par, _ch=ch: (
+                    self._log(f"extendTraces JS ({_par}|ch{_ch}): {r}")
+                    if r != "ok" else None
+                ),
+            )
 
 
 if __name__ == "__main__":
