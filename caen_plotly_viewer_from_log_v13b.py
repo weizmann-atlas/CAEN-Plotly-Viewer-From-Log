@@ -915,20 +915,28 @@ class PlotlyLiveViewer(QWidget):
 
             self._log(f"extendTraces idx={trace_idx} ({par}|ch{ch}) x={len(group)} pts")
             figure_timestamps = group["timestamp"].tolist()
-            # ISO 8601 with T separator — the format Plotly.js reliably parses
-            # on a date axis (space-separated strings can be silently rejected).
-            timestamps = group["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f").tolist()
             values = group["val"].tolist()
-            if self.current_fig is not None and trace_idx < len(self.current_fig.data):
-                current_trace = self.current_fig.data[trace_idx]
-                current_trace.x = list(current_trace.x) + figure_timestamps
-                current_trace.y = list(current_trace.y) + values
+
+            # Update the Python-side figure so current_trace always holds the
+            # full accumulated data (initial plot + all live updates so far).
+            if self.current_fig is None or trace_idx >= len(self.current_fig.data):
+                continue
+            current_trace = self.current_fig.data[trace_idx]
+            current_trace.x = list(current_trace.x) + figure_timestamps
+            current_trace.y = list(current_trace.y) + values
+
+            # Send the FULL x+y from Python — never read el.data[i].y from
+            # the DOM. Plotly.js 2.x does not populate el.data[i].y after
+            # rendering (internal state lives in _fullData), so DOM reads
+            # give an empty y array → wrong x/y pairings in the chart.
+            full_x = (
+                pd.to_datetime(list(current_trace.x))
+                .strftime("%Y-%m-%dT%H:%M:%S.%f")
+                .tolist()
+            )
+            full_y = [float(v) for v in current_trace.y]
             payload = json.dumps(
-                {
-                    "trace_index": trace_idx,
-                    "x": timestamps,
-                    "y": values,
-                }
+                {"trace_index": trace_idx, "x": full_x, "y": full_y}
             )
             js_code = f"""
             (function() {{
@@ -936,27 +944,15 @@ class PlotlyLiveViewer(QWidget):
                 const data = {payload};
                 const el = document.getElementById('plotly-live-view');
                 if (!el) return 'no-element';
-                const trace = el.data && el.data[data.trace_index];
-                if (!trace) return 'no-trace:' + data.trace_index;
+                if (!el.data || !el.data[data.trace_index]) return 'no-trace:' + data.trace_index;
                 try {{
-                    // Plotly.js 2.x stores trace arrays as typed arrays
-                    // (Float64Array) after rendering. extendTraces does a
-                    // strict Array.isArray() check and rejects typed arrays.
-                    // Convert x and y in-place to plain JS arrays so that
-                    // extendTraces can call push() on them. Plotly never
-                    // replaces el.data[i].x/y with typed arrays during
-                    // rendering (it uses _fullData for that), so the plain
-                    // array survives until the next generate_plots() call.
-                    if (!Array.isArray(trace.x)) trace.x = Array.from(trace.x || []);
-                    if (!Array.isArray(trace.y)) trace.y = Array.from(trace.y || []);
-                    const origLen = trace.x.length;
-                    Plotly.extendTraces(el, {{x: [data.x], y: [data.y]}}, [data.trace_index])
+                    Plotly.restyle(el, {{x: [data.x], y: [data.y]}}, [data.trace_index])
                         .then(function() {{
-                            // New timestamps are typically beyond the original
-                            // axis window; force autorange to make them visible.
+                            // New timestamps are beyond the original axis window;
+                            // force autorange so they become visible.
                             Plotly.relayout(el, {{'xaxis.autorange': true}});
                         }});
-                    return 'ok:orig=' + origLen + ':total=' + (origLen + data.x.length);
+                    return 'ok:n=' + data.x.length;
                 }} catch(e) {{
                     return 'error:' + e.toString();
                 }}
