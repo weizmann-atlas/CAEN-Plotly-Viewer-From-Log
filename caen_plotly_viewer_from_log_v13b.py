@@ -815,6 +815,7 @@ class PlotlyLiveViewer(QWidget):
         self._tabs = []  # ordered list of PlotTab instances
 
         self.setMinimumSize(1200, 800)
+        self.resize(1400, 950)
         self._update_window_title()
 
         layout = QVBoxLayout()
@@ -837,7 +838,9 @@ class PlotlyLiveViewer(QWidget):
         titles_row = QHBoxLayout()
         titles_row.addWidget(QLabel("Channel names:"))
         self.channel_titles_scroll = QScrollArea()
-        self.channel_titles_scroll.setWidgetResizable(True)
+        # Do NOT setWidgetResizable(True) — that forces the inner widget to match
+        # the viewport width, which prevents horizontal scrolling and causes Qt to
+        # ignore the widget's natural sizeHint after we rebuild its contents.
         self.channel_titles_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarAlwaysOff
         )
@@ -845,11 +848,13 @@ class PlotlyLiveViewer(QWidget):
             Qt.ScrollBarAsNeeded
         )
         self.channel_titles_scroll.setFixedHeight(52)
+        # channel_titles_widget / channel_titles_layout are (re)created fresh in
+        # _rebuild_data_controls each time a file is loaded.  Initialise them here
+        # so the scroll area has something to show before a file is opened.
         self.channel_titles_widget = QWidget()
         self.channel_titles_layout = QHBoxLayout(self.channel_titles_widget)
         self.channel_titles_layout.setContentsMargins(4, 2, 4, 2)
         self.channel_titles_layout.setSpacing(6)
-        self.channel_titles_layout.addStretch()   # keeps items left-aligned
         self.channel_titles_scroll.setWidget(self.channel_titles_widget)
         titles_row.addWidget(self.channel_titles_scroll, stretch=1)
         layout.addLayout(titles_row)
@@ -1027,12 +1032,22 @@ class PlotlyLiveViewer(QWidget):
 
     def _rebuild_data_controls(self):
         """Rebuild the shared channel-title strip and repopulate all tabs."""
-        # Completely clear the horizontal titles layout and re-add a stretch
-        self._clear_layout(self.channel_titles_layout)
         self.channel_title_inputs = {}
 
         channels = sorted(self.df["ch"].unique())
         parameters = sorted(self.df["par"].unique())
+
+        # Replace the scroll area's inner widget entirely.  Patching the existing
+        # layout in-place is unreliable because Qt may not re-evaluate the widget's
+        # sizeHint (needed for horizontal scrolling) after we clear and refill it.
+        old_widget = self.channel_titles_scroll.takeWidget()
+        if old_widget is not None:
+            old_widget.deleteLater()
+
+        self.channel_titles_widget = QWidget()
+        self.channel_titles_layout = QHBoxLayout(self.channel_titles_widget)
+        self.channel_titles_layout.setContentsMargins(4, 2, 4, 2)
+        self.channel_titles_layout.setSpacing(6)
 
         for ch in channels:
             self.channel_titles_layout.addWidget(QLabel(f"ch {ch}:"))
@@ -1045,7 +1060,13 @@ class PlotlyLiveViewer(QWidget):
             self.channel_title_inputs[ch] = inp
             self.channel_titles_layout.addWidget(inp)
 
-        self.channel_titles_layout.addStretch()  # keep items left-aligned
+        self.channel_titles_layout.addStretch()  # push items to the left
+
+        # Let the widget compute its natural size from the layout, then hand it
+        # to the scroll area.  adjustSize() sets width = sizeHint().width() so
+        # the horizontal scrollbar appears automatically when needed.
+        self.channel_titles_widget.adjustSize()
+        self.channel_titles_scroll.setWidget(self.channel_titles_widget)
 
         for tab in self._tabs:
             tab._repopulate_selections(channels, parameters)
