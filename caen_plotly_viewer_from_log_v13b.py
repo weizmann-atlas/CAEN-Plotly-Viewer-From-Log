@@ -82,6 +82,27 @@ def parse_caen_log(filepath):
         return _parse_text(f.read())
 
 
+# ── Parameter display helpers ─────────────────────────────────────────────────
+
+# Map CAEN parameter names (lower-cased) to their physical units.
+_CAEN_PAR_UNITS: dict = {
+    "imon":  "µA",
+    "vmon":  "V",
+    "iset":  "µA",
+    "vset":  "V",
+    "rup":   "V/s",
+    "rdwn":  "V/s",
+    "trip":  "s",
+    "svmax": "V",
+}
+
+
+def _par_axis_title(par: str) -> str:
+    """Return 'PAR [unit]' when a unit is known for this CAEN parameter."""
+    unit = _CAEN_PAR_UNITS.get(par.lower())
+    return f"{par} [{unit}]" if unit else par
+
+
 # ── Per-tab canvas widget ─────────────────────────────────────────────────────
 
 class PlotTab(QWidget):
@@ -412,18 +433,27 @@ class PlotTab(QWidget):
                     legend_channels_seen.add(ch)
                     trace_map[(par, ch)] = len(fig.data) - 1
 
-                fig.update_yaxes(title_text=par, type=axis_type, row=i, col=1)
+                fig.update_yaxes(
+                    title_text=_par_axis_title(par),
+                    type=axis_type,
+                    row=i, col=1,
+                )
+
+            # Uniform font sizes applied across all subplots after the loop
+            fig.update_yaxes(title_font=dict(size=18), tickfont=dict(size=15))
+            fig.update_xaxes(tickfont=dict(size=15))
 
             fig.update_layout(
                 height=300 * rows,
                 hovermode="x unified",
-                title_text=self.viewer_app.loaded_filename,
+                title=dict(
+                    text=self.viewer_app.loaded_filename,
+                    font=dict(size=18),
+                ),
                 margin=dict(r=220),
                 legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
-                # Larger default font — Plotly's built-in default (12 px) is
-                # too small on typical monitor / DPI combinations.  This sets
-                # the base size for axis tick labels, axis titles, legend text,
-                # and hover labels; the plot title inherits a 1.2× multiplier.
+                # Base font for everything not explicitly overridden above
+                # (hover labels, legend text, …).
                 font=dict(size=15),
             )
 
