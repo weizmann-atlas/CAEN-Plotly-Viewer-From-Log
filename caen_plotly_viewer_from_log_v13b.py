@@ -195,7 +195,12 @@ class PlotTab(QWidget):
         self.plot_button.clicked.connect(self.generate_plots)
 
         self.log_scale_checkbox = QCheckBox("Log Y")
-        self.log_scale_checkbox.stateChanged.connect(self.on_plot_option_changed)
+        # Use toggled (bool) instead of stateChanged (int) and wrap in a lambda
+        # so the signal argument is explicitly discarded — avoids a silent
+        # TypeError on some PyQt5 builds when argument count mismatches.
+        self.log_scale_checkbox.toggled.connect(
+            lambda _checked: self.on_plot_option_changed()
+        )
 
         self.export_canvas_button = QPushButton("Export Canvas PDF")
         self.export_canvas_button.clicked.connect(self.export_canvas_pdf)
@@ -415,6 +420,11 @@ class PlotTab(QWidget):
                 title_text=self.viewer_app.loaded_filename,
                 margin=dict(r=220),
                 legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
+                # Larger default font — Plotly's built-in default (12 px) is
+                # too small on typical monitor / DPI combinations.  This sets
+                # the base size for axis tick labels, axis titles, legend text,
+                # and hover labels; the plot title inherits a 1.2× multiplier.
+                font=dict(size=15),
             )
 
             viewer = QWebEngineView()
@@ -815,7 +825,11 @@ class PlotlyLiveViewer(QWidget):
         self._tabs = []  # ordered list of PlotTab instances
 
         self.setMinimumSize(1200, 800)
-        self.resize(1400, 950)
+        # Open at ~85 % of the available screen area so the window feels spacious
+        # on any monitor size.  setMinimumSize only sets a floor; the actual
+        # opening size must be set explicitly with resize().
+        _screen = QApplication.primaryScreen().availableGeometry()
+        self.resize(int(_screen.width() * 0.85), int(_screen.height() * 0.85))
         self._update_window_title()
 
         layout = QVBoxLayout()
