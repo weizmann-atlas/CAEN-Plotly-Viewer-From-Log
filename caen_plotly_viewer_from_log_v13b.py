@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
     QTabBar,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QTimer, Qt, QUrl, QMarginsF
+from PyQt5.QtCore import QTimer, Qt, QUrl, QMarginsF, QRectF
 from PyQt5.QtGui import QPageLayout, QPageSize, QPainter, QFont
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtPrintSupport import QPrinter
@@ -625,7 +625,29 @@ window.traceNameToIndex = {js_mapping};
             )
             renderer = QSvgRenderer(svg_bytes)
             painter = QPainter(printer)
-            renderer.render(painter)
+
+            # render(painter) alone fills the page rect with no aspect-ratio
+            # constraint, stretching the SVG non-uniformly and compressing text.
+            # Instead, compute a target rect that fits the SVG uniformly inside
+            # the page, centred, with the original proportions preserved.
+            page = QRectF(painter.viewport())
+            svg_size = renderer.defaultSize()
+            if svg_size.isValid() and svg_size.width() > 0 and svg_size.height() > 0:
+                scale = min(
+                    page.width()  / svg_size.width(),
+                    page.height() / svg_size.height(),
+                )
+                w = svg_size.width()  * scale
+                h = svg_size.height() * scale
+                target = QRectF(
+                    page.x() + (page.width()  - w) / 2,
+                    page.y() + (page.height() - h) / 2,
+                    w, h,
+                )
+                renderer.render(painter, target)
+            else:
+                renderer.render(painter)
+
             painter.end()
 
             saved_path = self._pending_pdf_path
