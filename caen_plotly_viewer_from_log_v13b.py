@@ -84,23 +84,31 @@ def parse_caen_log(filepath):
 
 # ── Parameter display helpers ─────────────────────────────────────────────────
 
-# Map CAEN parameter names (lower-cased) to their physical units.
-_CAEN_PAR_UNITS: dict = {
-    "imon":  "µA",
-    "vmon":  "V",
-    "iset":  "µA",
-    "vset":  "V",
-    "rup":   "V/s",
-    "rdwn":  "V/s",
-    "trip":  "s",
-    "svmax": "V",
-}
+# Ordered list of (lowercase prefix, unit) pairs.  A parameter name matches
+# the first prefix it starts with, so longer prefixes should come first.
+# This handles CAEN variants like ImonH / ImonL / VmonH / VmonL / ISet2 …
+_CAEN_PAR_UNIT_PREFIXES: list = [
+    ("svmax", "V"),    # before "vmon"/"vset" — must be checked first
+    ("imon",  "µA"),
+    ("vmon",  "V"),
+    ("iset",  "µA"),
+    ("vset",  "V"),
+    ("rup",   "V/s"),
+    ("rdwn",  "V/s"),
+    ("trip",  "s"),
+]
 
 
 def _par_axis_title(par: str) -> str:
-    """Return 'PAR [unit]' when a unit is known for this CAEN parameter."""
-    unit = _CAEN_PAR_UNITS.get(par.lower())
-    return f"{par} [{unit}]" if unit else par
+    """Return 'PAR [unit]' for any CAEN parameter whose name starts with a
+    known root, e.g. IMon, ImonH, ImonL, VmonH → 'IMon [µA]' / 'VMon [V]'.
+    Unknown parameters are returned unchanged.
+    """
+    par_lower = par.lower()
+    for prefix, unit in _CAEN_PAR_UNIT_PREFIXES:
+        if par_lower.startswith(prefix):
+            return f"{par} [{unit}]"
+    return par
 
 
 # ── Per-tab canvas widget ─────────────────────────────────────────────────────
