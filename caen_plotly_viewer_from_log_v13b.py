@@ -1192,18 +1192,24 @@ class PlotlyLiveViewer(QWidget):
             return
         self._log("tick")
         try:
-            with open(
-                self.loaded_path, "r", encoding="utf-8", errors="ignore"
-            ) as handle:
+            with open(self.loaded_path, "rb") as handle:
                 handle.seek(self.last_position)
-                new_lines = handle.readlines()
-                self.last_position = handle.tell()
-            if not new_lines:
-                self._log("tick: no new lines")
+                raw = handle.read()
+            if not raw:
+                self._log("tick: no new bytes")
                 return
-            new_df = parse_caen_lines(new_lines)
+            # Guard against a partially-written last line (CAEN still writing).
+            # Only process bytes up to the last complete newline; defer the
+            # remainder to the next tick so no log entry is permanently lost.
+            last_nl = raw.rfind(b'\n')
+            if last_nl == -1:
+                self._log("tick: no complete new lines yet")
+                return
+            self.last_position += last_nl + 1
+            new_text = raw[:last_nl + 1].decode("utf-8", errors="ignore")
+            new_df = _parse_text(new_text)
             if new_df.empty:
-                self._log(f"tick: {len(new_lines)} lines but 0 parsed rows")
+                self._log(f"tick: {new_text.count(chr(10))} lines but 0 parsed rows")
                 return
             self._log(f"tick: {len(new_df)} new rows")
             new_df = new_df.sort_values("timestamp").reset_index(drop=True)
