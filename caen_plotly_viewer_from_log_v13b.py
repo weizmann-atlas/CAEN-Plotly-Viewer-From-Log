@@ -7,6 +7,7 @@ import traceback
 import urllib.parse
 import threading
 import http.server
+import math
 import socket
 from datetime import datetime
 
@@ -341,7 +342,7 @@ class PlotTab(QWidget):
         if df.empty:
             return
         self._t_min = df["timestamp"].min()
-        total_seconds = int((df["timestamp"].max() - self._t_min).total_seconds())
+        total_seconds = math.ceil((df["timestamp"].max() - self._t_min).total_seconds())
         for w in (self.start_slider, self.end_slider):
             w.blockSignals(True)
             w.setRange(0, max(total_seconds, 1))
@@ -840,6 +841,15 @@ window.traceNameToIndex = {js_mapping};
             payload = json.dumps(
                 {"trace_index": trace_idx, "x": full_x, "y": full_y}
             )
+            # Build a relayout dict that resets every axis so new values that
+            # fall outside the initial plotted range become visible.  One
+            # yaxis per selected parameter (yaxis, yaxis2, yaxis3, …).
+            _, selected_par = self.current_selection
+            relayout_axes: dict = {"xaxis.autorange": True}
+            for j in range(1, len(selected_par) + 1):
+                key = "yaxis.autorange" if j == 1 else f"yaxis{j}.autorange"
+                relayout_axes[key] = True
+            relayout_json = json.dumps(relayout_axes)
             js_code = f"""
             (function() {{
                 if (!window.Plotly) return 'no-plotly';
@@ -850,9 +860,9 @@ window.traceNameToIndex = {js_mapping};
                 try {{
                     Plotly.restyle(el, {{x: [data.x], y: [data.y]}}, [data.trace_index])
                         .then(function() {{
-                            // New timestamps are beyond the original axis window;
-                            // force autorange so they become visible.
-                            Plotly.relayout(el, {{'xaxis.autorange': true}});
+                            // Reset every axis so data outside the initial
+                            // plotted range (e.g. a voltage ramp) stays visible.
+                            Plotly.relayout(el, {relayout_json});
                         }});
                     return 'ok:n=' + data.x.length;
                 }} catch(e) {{
